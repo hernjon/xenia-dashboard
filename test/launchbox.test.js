@@ -21,6 +21,25 @@ test('only Xbox 360 games with a usable box picture reach the index, best pictur
   assert.deepEqual(index.map(entry => entry.name), ['Banjo & Kazooie', 'Gears of War'], 'other platforms, games without pictures and orphans are left out; entities are decoded');
   assert.deepEqual(index[1].images.map(image => [image.file, image.type, image.region]), [['aaaa-na.jpg', 'Box - Front', 'North America'], ['aaaa-eu.jpg', 'Box - Front', 'Europe'], ['bbbb-3d.png', 'Box - 3D', 'North America']], 'Front before 3D, home region first; backs and unsafe names dropped');
 });
+test('the same pass keeps every platform for native games: name, platform and at most four pictures, fronts first', async t => {
+  const dir = await temp(t), file = path.join(dir, 'Metadata.zip');
+  const n64 = game('500', 'The Legend of Zelda: Majora&apos;s Mask', 'Nintendo 64') + ['a', 'b', 'c'].map(name => picture('500', `${name}-3d.png`, 'Box - 3D')).join('') + picture('500', 'z-fan.jpg', 'Fanart - Box - Front') + picture('500', 'front.jpg', 'Box - Front', 'Japan') + picture('500', 'back.jpg', 'Box - Back');
+  await fs.writeFile(file, zip([['Metadata.xml', XML.replace('</LaunchBox>', n64 + '</LaunchBox>')]]));
+  const { xbox360, all } = await launchbox.buildIndexes(launchbox.lines(file));
+  assert.deepEqual(xbox360, await launchbox.buildIndex(launchbox.lines(file)), 'the Xbox 360 index is what it always was');
+  assert.deepEqual(all.map(entry => [entry.name, entry.platform]), [['Banjo & Kazooie', 'Microsoft Xbox 360'], ['Gears of War', 'Microsoft Windows'], ['Gears of War', 'Microsoft Xbox 360'], ["The Legend of Zelda: Majora's Mask", 'Nintendo 64']]);
+  const zelda = all.at(-1);
+  assert.equal(zelda.images.length, 4);
+  assert.equal(zelda.images[0].file, 'front.jpg', 'a front cover first, whatever its region');
+  assert.equal(await launchbox.readIndex(dir, 'all'), null);
+  await launchbox.writeIndex(dir, all, 9, 'all');
+  const back = await launchbox.readIndex(dir, 'all');
+  assert.equal(back.built, 9); assert.equal(back.games.at(-1).platform, 'Nintendo 64');
+  await fs.writeFile(path.join(dir, 'all.json'), JSON.stringify({ built: 1, games: [{ id: '5', name: 'No platform', images: [{ file: 'a.jpg', type: 'Box - Front' }] }] }));
+  assert.deepEqual((await launchbox.readIndex(dir, 'all')).games, [], 'an entry without a platform is dropped');
+  assert.deepEqual(launchbox.search(back.games, 'Majoras Mask').map(found => [found.id, found.platform]), [['500', 'Nintendo 64']]);
+  await assert.rejects(launchbox.readIndex(dir, '../x'), /Unknown LaunchBox index/);
+});
 test('the ZIP reader refuses what it cannot read safely', async t => {
   const dir = await temp(t), write = async (name, bytes) => { const file = path.join(dir, name); await fs.writeFile(file, bytes); return file; };
   await assert.rejects(launchbox.locate(await write('nozip', Buffer.alloc(500, 1))), /not a ZIP/);
@@ -62,7 +81,8 @@ test('preparing downloads, indexes and then deletes the big file', async t => {
   const fetcher = async url => { assert.equal(url, launchbox.ZIP_URL); return { ok: true, status: 200, headers: { get: name => name === 'content-length' ? String(body.length) : null }, body: (async function* () { for (let at = 0; at < body.length; at += 100) yield body.subarray(at, at + 100); })() }; };
   const index = await launchbox.prepare(dir, { fetcher, onProgress: item => progress.push(item), now: 5 });
   assert.equal(index.length, 2); assert.equal((await launchbox.readIndex(dir)).built, 5);
-  assert.deepEqual((await fs.readdir(dir)).sort(), ['xbox360.json'], 'the ZIP and scratch files are gone');
+  assert.deepEqual((await fs.readdir(dir)).sort(), ['all.json', 'xbox360.json'], 'both indexes stay; the ZIP and scratch files are gone');
+  assert.deepEqual((await launchbox.readIndex(dir, 'all')).games.map(entry => entry.platform).sort(), ['Microsoft Windows', 'Microsoft Xbox 360', 'Microsoft Xbox 360']);
   for (const [name, fetch, pattern] of [
     ['cut', async () => ({ ok: true, headers: { get: () => String(body.length + 50) }, body: (async function* () { yield body; })() }), /cut short/],
     ['long', async () => ({ ok: true, headers: { get: () => '10' }, body: (async function* () { yield body; })() }), /larger than announced/],

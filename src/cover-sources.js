@@ -17,16 +17,20 @@ const NEEDS_DATA = 'Download the LaunchBox data first.';
 
 function create({ fetcher, setupFetcher, directory }) {
   const manager = covers.createService(fetcher);
-  let index;
+  let index, allIndex;
   const data = async () => (index ??= await launchbox.readIndex(directory));
+  const allData = async () => (allIndex ??= await launchbox.readIndex(directory, 'all'));
   const need = async () => { const found = await data(); if (!found) throw Error(NEEDS_DATA); return found.games; };
+  const needAll = async () => { const found = await allData(); if (!found) throw Error(NEEDS_DATA); return found.games; };
+  // One download writes both indexes, so either source's prepare makes both read their file again.
+  const prepare = async onProgress => { await launchbox.prepare(directory, { fetcher: setupFetcher, onProgress }); index = undefined; allIndex = undefined; };
   const sources = new Map();
 
   // LaunchBox is listed before Xenia Manager everywhere (this order is the one the screens show).
   sources.set('launchbox', {
     id: 'launchbox', label: 'LaunchBox', needsDownload: true,
     async status() { const found = await data(); return { ready: !!found, built: found?.built || 0, games: found?.games.length || 0 }; },
-    async prepare(onProgress) { await launchbox.prepare(directory, { fetcher: setupFetcher, onProgress }); index = undefined; return this.status(); },
+    async prepare(onProgress) { await prepare(onProgress); return this.status(); },
     async search(title) { return launchbox.search(await need(), title).map(game => ({ key: game.id, title: game.title, pictures: game.pictures })); },
     async pictures(key) { return launchbox.pictures(await need(), key).map(picture => ({ key: picture.file, label: picture.label })); },
     async image(key, picture) { return launchbox.fetchImage(await need(), key, picture, fetcher); },
@@ -48,6 +52,17 @@ function create({ fetcher, setupFetcher, directory }) {
       if (!titleId) return null;
       try { return { bytes: await manager.downloadTitle(titleId), mime: 'image/jpeg', reference: titleId }; } catch { return null; }
     }
+  });
+  // LaunchBox for native games: every platform, with the platform shown. Never used by the bulk download, because an
+  // unattended match by name across every console picks the wrong game too often.
+  sources.set('launchbox-all', {
+    id: 'launchbox-all', label: 'LaunchBox', needsDownload: true,
+    async status() { const found = await allData(); return { ready: !!found, built: found?.built || 0, games: found?.games.length || 0 }; },
+    async prepare(onProgress) { await prepare(onProgress); return this.status(); },
+    async search(title) { return launchbox.search(await needAll(), title).map(game => ({ key: game.id, title: game.title, platform: game.platform, pictures: game.pictures })); },
+    async pictures(key) { return launchbox.pictures(await needAll(), key).map(picture => ({ key: picture.file, label: picture.label })); },
+    async image(key, picture) { return launchbox.fetchImage(await needAll(), key, picture, fetcher); },
+    async auto() { return null; }
   });
   return sources;
 }

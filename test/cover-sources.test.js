@@ -25,9 +25,9 @@ function setup(directory, extra = {}) {
 
 test('both sources answer the same questions', async t => {
   const { sources } = setup(await temp(t));
-  assert.deepEqual([...sources.keys()], ['launchbox', 'xenia-manager'], 'LaunchBox is always listed before Xenia Manager');
+  assert.deepEqual([...sources.keys()], ['launchbox', 'xenia-manager', 'launchbox-all'], 'LaunchBox is always listed before Xenia Manager; every-platform LaunchBox (native games) last');
   for (const source of sources.values()) for (const method of ['status', 'prepare', 'search', 'pictures', 'image', 'auto']) assert.equal(typeof source[method], 'function', `${source.id}.${method}`);
-  assert.deepEqual(['xenia-manager', 'launchbox'].map(id => sources.get(id).needsDownload), [false, true]);
+  assert.deepEqual(['xenia-manager', 'launchbox', 'launchbox-all'].map(id => sources.get(id).needsDownload), [false, true, true]);
   assert.deepEqual(Object.keys(coverSources.AUTO_MODES), ['launchbox', 'both', 'xenia-manager'], 'the same order in the automatic download modes');
 });
 test('the Xenia Manager source searches by name, offers one picture and downloads by title ID', async t => {
@@ -65,6 +65,20 @@ test('the LaunchBox source downloads its data once and forgets the stale copy', 
   const box = sources.get('launchbox'); assert.equal((await box.status()).ready, false);
   const progress = []; const status = await box.prepare(item => progress.push(item));
   assert.deepEqual([status.ready, status.games], [true, 1]); assert.equal((await box.search('Fresh Game'))[0].key, '5');
+});
+test('every-platform LaunchBox (native games) searches all of LaunchBox, shows the platform and never picks on its own', async t => {
+  const dir = await temp(t), { sources } = setup(dir), any = sources.get('launchbox-all');
+  assert.equal(any.label, 'LaunchBox');
+  assert.equal((await any.status()).ready, false);
+  await assert.rejects(any.search('zelda'), /Download the LaunchBox data first/);
+  await launchbox.writeIndex(dir, [{ id: '500', name: 'The Legend of Zelda: Majora\'s Mask', platform: 'Nintendo 64', images: [{ file: 'front.jpg', type: 'Box - Front', region: 'Japan' }] }], 3, 'all');
+  const { sources: later } = setup(dir), ready = later.get('launchbox-all');
+  assert.deepEqual({ ...(await ready.status()) }, { ready: true, built: 3, games: 1 });
+  const [found] = await ready.search('Majora\'s Mask');
+  assert.deepEqual([found.key, found.platform], ['500', 'Nintendo 64']);
+  assert.equal((await ready.image('500', 'front.jpg')).mime, 'image/jpeg');
+  assert.equal(await ready.auto({ title: 'The Legend of Zelda: Majora\'s Mask' }), null);
+  assert.equal((await later.get('launchbox').status()).ready, false, 'the Xbox 360 index is a different file');
 });
 test('the bulk download order puts LaunchBox first only when asked', () => {
   assert.deepEqual({ ...coverSources.AUTO_MODES }, { 'xenia-manager': ['xenia-manager'], launchbox: ['launchbox'], both: ['launchbox', 'xenia-manager'] });

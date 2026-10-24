@@ -726,6 +726,9 @@ else {
     const coverSources=coverSourcesModule.create({fetcher:(...args)=>net.fetch(...args),setupFetcher:xeniaReleases.httpsFetcher,directory:path.join(app.getPath('userData'),'launchbox')});
     const coverSource=id=>{const found=typeof id==='string'?coverSources.get(id):null;if(!found)throw Error('Unknown cover source');return found;};
     const coverGame=gameId=>{const game=library.games.find(g=>g.id===gameId);if(!game)throw Error('Unknown game');return game;};
+    // Native games take their covers from every-platform LaunchBox only; Xenia games never do.
+    const forNative=id=>id==='launchbox-all';
+    const coverSourceFor=(game,id)=>{const source=coverSource(id);if((game.kind==='native')!==forNative(source.id))throw Error('That cover source is not for this game');return source;};
     const coverTitle=game=>groupGames(library.games).find(g=>g.id===game.id)?.title||game.title;
     const requireAnyAdmin=()=>{if(!(sessionValid('*')||sessionValid('xenia')||sessionValid('dashboard')))throw new Error('Admin session expired. Open administrator access again.');};
     const sendCoverProgress=progress=>{if(win&&!win.isDestroyed())win.webContents.send('covers:progress',progress);};
@@ -735,26 +738,26 @@ else {
       const next={...library,games:library.games.map(g=>g.id===game.id?{...g,cover_art_path:file,uses_fallback_art:false,cover_source:source,cover_title_id:reference||null}:g)};
       await scanner.saveLibrary(libraryFile,next);library=next;coverRevision++;return publicGames();
     };
-    handle('covers:sources',async()=>{requireAnyAdmin();const list=[];for(const source of coverSources.values())list.push({id:source.id,label:source.label,needs_download:source.needsDownload,...await source.status()});return list;});
+    handle('covers:sources',async gameId=>{requireAnyAdmin();const native=gameId!=null&&coverGame(gameId).kind==='native',list=[];for(const source of coverSources.values())if(forNative(source.id)===native)list.push({id:source.id,label:source.label,needs_download:source.needsDownload,...await source.status()});return list;});
     handle('covers:prepare',sourceId=>serialized(async()=>{
       requireAnyAdmin();const source=coverSource(sourceId);
       return {id:source.id,label:source.label,needs_download:source.needsDownload,...await source.prepare(progress=>sendCoverProgress({kind:'download',...progress}))};
     }));
     handle('covers:search',(gameId,sourceId,query)=>{
-      requireAdmin('xenia');const source=coverSource(sourceId),game=coverGame(gameId);
+      requireAdmin('xenia');const game=coverGame(gameId),source=coverSourceFor(game,sourceId);
       if(query===undefined)return source.search(coverTitle(game));
-      if(sourceId!=='launchbox'||typeof query!=='string'||!query.trim()||query.trim().length>120)throw Error('Invalid LaunchBox search text');
+      if(!['launchbox','launchbox-all'].includes(sourceId)||typeof query!=='string'||!query.trim()||query.trim().length>120)throw Error('Invalid LaunchBox search text');
       return source.search(query.trim());
     });
-    handle('covers:pictures',(gameId,sourceId,key)=>{requireAdmin('xenia');coverGame(gameId);return coverSource(sourceId).pictures(key);});
+    handle('covers:pictures',(gameId,sourceId,key)=>{requireAdmin('xenia');return coverSourceFor(coverGame(gameId),sourceId).pictures(key);});
     handle('covers:preview',async(gameId,sourceId,key,picture)=>{
-      requireAdmin('xenia');coverGame(gameId);
-      const image=await coverSource(sourceId).image(key,picture);requireAdmin('xenia');
+      requireAdmin('xenia');
+      const image=await coverSourceFor(coverGame(gameId),sourceId).image(key,picture);requireAdmin('xenia');
       const id=++previewCounter;previews.set(id,image);for(const old of [...previews.keys()].slice(0,-6))previews.delete(old);
       return `kratos-art://preview/${id}`;
     });
     handle('covers:apply',(gameId,sourceId,key,picture)=>serialized(async()=>{
-      requireAdmin('xenia');const game=coverGame(gameId),source=coverSource(sourceId);
+      requireAdmin('xenia');const game=coverGame(gameId),source=coverSourceFor(game,sourceId);
       const found=await source.image(key,picture);requireAdmin('xenia');
       const image=localCover.convert(found.bytes,nativeImage);requireAdmin('xenia');
       return useCover(game,image,source.id,sourceId==='xenia-manager'?key:null);
@@ -779,7 +782,8 @@ else {
       if(typeof mode!=='string'||!Object.hasOwn(coverSourcesModule.AUTO_MODES,mode))throw Error('Unknown cover source');
       const order=coverSourcesModule.AUTO_MODES[mode].map(coverSource);
       for(const source of order)if(!(await source.status()).ready)throw Error(`${source.label} needs its data first: choose “Download ${source.label} data” on this screen.`);
-      const wanted=all===true?library.games:library.games.filter(g=>g.uses_fallback_art),files=new Map(); // `all` replaces covers already there; a game nothing is found for keeps its current one.
+      // Native games keep the cover their owner picked: an unattended match by name across every console guesses wrong too often.
+      const xenia=library.games.filter(g=>g.kind!=='native'),wanted=all===true?xenia:xenia.filter(g=>g.uses_fallback_art),files=new Map(); // `all` replaces covers already there; a game nothing is found for keeps its current one.
       let done=0;sendCoverProgress({kind:'auto',done,total:wanted.length});
       for(const game of wanted){
         try{

@@ -9,19 +9,24 @@ const AUTO_MODES = [
   { value: 'xenia-manager', label: 'Xenia Manager', needs: ['xenia-manager'] }
 ];
 const SOURCE_NOTES = {
-  launchbox: 'LaunchBox publishes its game database as one file of about 105 MB. It is downloaded once; only the Xbox 360 part (about 1 MB) is kept and the big file is deleted. After that, pictures are fetched one at a time.'
+  launchbox: 'LaunchBox publishes its game database as one file of about 105 MB. It is downloaded once; only the Xbox 360 part (about 1 MB) and a short list of every platform\'s games (for native games) are kept, and the big file is deleted. After that, pictures are fetched one at a time.',
+  'launchbox-all': 'LaunchBox publishes its game database as one file of about 105 MB. It is downloaded once; a short list of every platform\'s games and the Xbox 360 part are kept, and the big file is deleted. After that, pictures are fetched one at a time.'
 };
 let cm = { context: null, sources: [], stage: 'home', source: null, games: [], pictures: [], game: null, query: '', manualQuery: false, preview: 0, timer: null, mode: 'launchbox' };
 const coverDate = time => (time ? new Date(time).toISOString().slice(0, 10) : '');
 const coverSourceInfo = id => cm.sources.find(source => source.id === id);
 const coverNeedsData = source => !!source?.needs_download && !source.ready;
+// Two LaunchBox sources: Xbox 360 games (Xenia games) and every platform (native games). Both take a typed name.
+const isLaunchBox = id => id === 'launchbox' || id === 'launchbox-all';
+const coverGameLabel = game => `${game.title}${game.platform ? ` — ${game.platform}` : ''}`;
+const coverGamesWord = source => (source?.id === 'launchbox-all' ? 'games (every platform)' : 'Xbox 360 games');
 const coverModeInfo = () => AUTO_MODES.find(mode => mode.value === cm.mode) || AUTO_MODES.find(mode => mode.value === 'launchbox');
 
 // context: { game: {id,title} | null, leave(): back to wherever this was opened from }
 async function openCoverManager(context) {
   busy = true; errorDisplay.textContent = '';
   try {
-    cm = { ...cm, context, sources: await api.coverSources(), stage: context.game ? 'home' : 'bulk', source: null, games: [], pictures: [], game: null, query: context.game?.title || '', manualQuery: false };
+    cm = { ...cm, context, sources: await api.coverSources(context.game?.id), stage: context.game ? 'home' : 'bulk', source: null, games: [], pictures: [], game: null, query: context.game?.title || '', manualQuery: false };
     renderCover();
   } catch (error) { errorDisplay.textContent = error.message; } finally { busy = false; }
 }
@@ -29,7 +34,7 @@ function coverRows() {
   const { stage, sources } = cm;
   if (stage === 'home') return [{ action: 'local', label: 'Choose an image from this computer' }, ...sources.map(source => ({ action: 'source', source, label: `${source.label} covers (online)` })), { action: 'back', label: 'Return to game options' }];
   if (stage === 'setup') return [{ action: 'prepare', source: cm.source, label: `Download ${cm.source.label} data` }, { action: 'back', label: 'Return' }];
-  if (stage === 'games') return [...(cm.source.id === 'launchbox' ? [{ action: 'search-query', label: `Search LaunchBox for: ${cm.query || 'Enter a game name'}` }] : []), ...cm.games.map(game => ({ action: 'game', game, label: `${game.title} (${game.pictures})` })), ...(cm.source.needs_download ? [{ action: 'prepare', source: cm.source, label: `Update ${cm.source.label} data` }] : []), { action: 'back', label: 'Return' }];
+  if (stage === 'games') return [...(isLaunchBox(cm.source.id) ? [{ action: 'search-query', label: `Search LaunchBox for: ${cm.query || 'Enter a game name'}` }] : []), ...cm.games.map(game => ({ action: 'game', game, label: `${coverGameLabel(game)} (${game.pictures})` })), ...(cm.source.needs_download ? [{ action: 'prepare', source: cm.source, label: `Update ${cm.source.label} data` }] : []), { action: 'back', label: 'Return' }];
   if (stage === 'pictures') return [...cm.pictures.map(picture => ({ action: 'use', picture, label: picture.label })), { action: 'back', label: 'Back' }];
   // Source first, then its data, then the downloads, then the local scan. A source that needs no data has no data row.
   const data = coverModeInfo().needs.map(coverSourceInfo).filter(source => source?.needs_download);
@@ -50,7 +55,7 @@ function renderCover(index = 0) {
 }
 function sourceStatusText(source) {
   if (!source.needs_download) return 'Online · no download needed';
-  return source.ready ? `Ready · ${source.games} Xbox 360 games · data from ${coverDate(source.built)}` : 'Not downloaded yet';
+  return source.ready ? `Ready · ${source.games} ${coverGamesWord(source)} · data from ${coverDate(source.built)}` : 'Not downloaded yet';
 }
 function updateCoverDetails() {
   const value = content.querySelector('.setting-value'); if (!value) return;
@@ -65,9 +70,9 @@ function updateCoverDetails() {
     value.textContent = 'Not downloaded yet'; lines.push(SOURCE_NOTES[cm.source.id] || 'This source needs a one-time download.');
   } else if (stage === 'games') {
     value.textContent = cm.games.length ? `${cm.games.length} possible match${cm.games.length === 1 ? '' : 'es'}` : 'No game found with this name';
-    lines.push(cm.games.length ? 'Choose the game to see its pictures.' : `${cm.source.label} has no Xbox 360 game that matches this search.`);
-    if (cm.source.id === 'launchbox') lines.push('Choose “Search LaunchBox for” to edit the game name used for this search.');
-    if (cm.source.needs_download) lines.push(`\nData from ${coverDate(cm.source.built)} · ${cm.source.games} Xbox 360 games.`);
+    lines.push(cm.games.length ? 'Choose the game to see its pictures.' : `${cm.source.label} has no ${cm.source.id === 'launchbox-all' ? '' : 'Xbox 360 '}game that matches this search.`);
+    if (isLaunchBox(cm.source.id)) lines.push('Choose “Search LaunchBox for” to edit the game name used for this search.');
+    if (cm.source.needs_download) lines.push(`\nData from ${coverDate(cm.source.built)} · ${cm.source.games} ${coverGamesWord(cm.source)}.`);
   } else if (stage === 'pictures') {
     value.textContent = row?.picture ? row.picture.label : cm.game.title;
     if (row?.picture) {
@@ -97,11 +102,11 @@ function coverBack() {
   else cm.context.leave();
   return true;
 }
-async function refreshCoverSources() { cm.sources = await api.coverSources(); cm.source = coverSourceInfo(cm.source?.id) || cm.source; }
+async function refreshCoverSources() { cm.sources = await api.coverSources(cm.context?.game?.id); cm.source = coverSourceInfo(cm.source?.id) || cm.source; }
 async function openCoverSource(source) {
   cm.source = source;
   if (coverNeedsData(source)) { cm.stage = 'setup'; return renderCover(); }
-  errorDisplay.textContent = 'Searching…'; cm.games = await api.searchCovers(cm.context.game.id, source.id, source.id === 'launchbox' && cm.manualQuery ? cm.query : undefined); errorDisplay.textContent = '';
+  errorDisplay.textContent = 'Searching…'; cm.games = await api.searchCovers(cm.context.game.id, source.id, isLaunchBox(source.id) && cm.manualQuery ? cm.query : undefined); errorDisplay.textContent = '';
   cm.stage = 'games'; renderCover();
 }
 async function searchLaunchBox(query, returnIndex) {

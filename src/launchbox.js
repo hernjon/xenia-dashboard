@@ -66,13 +66,16 @@ async function* lines(file) {
 
 // ------------------------------------------------------------ the index
 // Keeps only Xbox 360 games that have at least one usable picture: [{ id, name, images: [{ file, type, region }] }]
-async function buildIndex(source) {
+// One pass over the database gives two indexes: the Xbox 360 games (for Xenia games, as always) and every platform's
+// games with a few pictures each (for native games: recomps and PC ports can be any console's game).
+const MAX_PER_GAME_ALL = 4;
+async function buildIndexes(source) {
   const games = new Map(), pictures = new Map();
   let game = null, picture = null;
   for await (const raw of source) {
     const line = raw.trim();
     if (game) {
-      if (line === '</Game>') { if (game.Platform === PLATFORM && game.DatabaseID && game.Name) games.set(game.DatabaseID, clean(game.Name, 120)); game = null; continue; }
+      if (line === '</Game>') { if (game.DatabaseID && game.Name && game.Platform) games.set(game.DatabaseID, { name: clean(game.Name, 120), platform: clean(game.Platform, 80) }); game = null; continue; }
       const found = /^<(Name|DatabaseID|Platform)>(.*)<\/\1>$/.exec(line); if (found) game[found[1]] = found[2];
     } else if (picture) {
       if (line === '</GameImage>') {
@@ -84,23 +87,30 @@ async function buildIndex(source) {
     else if (line === '<GameImage>') picture = {};
   }
   const order = [...TYPES.keys()], regionRank = region => region === 'North America' ? 0 : /World|Europe|United States/.test(region) ? 1 : 2;
-  const index = [];
-  for (const [id, name] of games) {
-    const images = (pictures.get(id) || []).sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type) || regionRank(a.region) - regionRank(b.region)).slice(0, MAX_PER_GAME);
-    if (images.length) index.push({ id, name, images });
+  const xbox360 = [], all = [];
+  for (const [id, { name, platform }] of games) {
+    const images = (pictures.get(id) || []).sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type) || regionRank(a.region) - regionRank(b.region));
+    if (!images.length) continue;
+    if (platform === PLATFORM) xbox360.push({ id, name, images: images.slice(0, MAX_PER_GAME) });
+    all.push({ id, name, platform, images: images.slice(0, MAX_PER_GAME_ALL) });
   }
-  return index.sort((a, b) => a.name.localeCompare(b.name));
+  return { xbox360: xbox360.sort((a, b) => a.name.localeCompare(b.name)), all: all.sort((a, b) => a.name.localeCompare(b.name) || a.platform.localeCompare(b.platform)) };
 }
-async function writeIndex(directory, index, now = Date.now()) {
+async function buildIndex(source) { return (await buildIndexes(source)).xbox360; }
+
+const INDEXES = new Set(['xbox360', 'all']);
+const indexFile = (directory, name) => { if (!INDEXES.has(name)) throw Error('Unknown LaunchBox index'); return path.join(directory, `${name}.json`); };
+async function writeIndex(directory, index, now = Date.now(), name = 'xbox360') {
   await fs.mkdir(directory, { recursive: true });
-  const file = path.join(directory, 'xbox360.json'), temp = `${file}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+  const file = indexFile(directory, name), temp = `${file}.${crypto.randomBytes(8).toString('hex')}.tmp`;
   await fs.writeFile(temp, JSON.stringify({ built: now, games: index }), { mode: 0o600, flag: 'wx' });
   await fs.rename(temp, file);
 }
-async function readIndex(directory) {
+async function readIndex(directory, name = 'xbox360') {
   let data;
-  try { data = JSON.parse(await fs.readFile(path.join(directory, 'xbox360.json'), 'utf8')); } catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
-  const games = Array.isArray(data?.games) ? data.games.filter(entry => typeof entry?.id === 'string' && /^\d{1,10}$/.test(entry.id) && typeof entry.name === 'string' && Array.isArray(entry.images)).map(entry => ({ id: entry.id, name: entry.name.slice(0, 120), images: entry.images.filter(image => FILE_NAME.test(image?.file || '') && TYPES.has(image.type)).map(image => ({ file: image.file, type: image.type, region: String(image.region || '').slice(0, 40) })) })).filter(entry => entry.images.length) : [];
+  const file = indexFile(directory, name), all = name === 'all';
+  try { data = JSON.parse(await fs.readFile(file, 'utf8')); } catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
+  const games = Array.isArray(data?.games) ? data.games.filter(entry => typeof entry?.id === 'string' && /^\d{1,10}$/.test(entry.id) && typeof entry.name === 'string' && Array.isArray(entry.images) && (!all || (typeof entry.platform === 'string' && entry.platform))).map(entry => ({ id: entry.id, name: entry.name.slice(0, 120), ...(all ? { platform: entry.platform.slice(0, 80) } : {}), images: entry.images.filter(image => FILE_NAME.test(image?.file || '') && TYPES.has(image.type)).map(image => ({ file: image.file, type: image.type, region: String(image.region || '').slice(0, 40) })) })).filter(entry => entry.images.length) : [];
   return { built: Number.isFinite(data?.built) ? data.built : 0, games };
 }
 
@@ -125,15 +135,16 @@ async function download(file, { fetcher, onProgress = () => {}, timeoutMs = 6000
     await fs.rename(temp, file);
   } catch (error) { await handle.close().catch(() => {}); await fs.unlink(temp).catch(() => {}); throw error; }
 }
-// Downloads Metadata.zip, reduces it to the Xbox 360 index, stores that, and throws the big file away.
+// Downloads Metadata.zip, reduces it to the two indexes, stores them, and throws the big file away.
 async function prepare(directory, { fetcher, onProgress, now }) {
   const zip = path.join(directory, 'Metadata.zip');
   try {
     await download(zip, { fetcher, onProgress });
-    const index = await buildIndex(lines(zip));
-    if (!index.length) throw Error('LaunchBox data had no Xbox 360 games');
-    await writeIndex(directory, index, now);
-    return index;
+    const { xbox360, all } = await buildIndexes(lines(zip));
+    if (!xbox360.length) throw Error('LaunchBox data had no Xbox 360 games');
+    await writeIndex(directory, all, now, 'all');
+    await writeIndex(directory, xbox360, now);
+    return xbox360;
   } finally { await fs.unlink(zip).catch(() => {}); }
 }
 
@@ -150,7 +161,7 @@ function exact(index, title) {
 // Games whose name resembles the title, best first (the same matcher the other catalogue uses).
 function search(index, title) {
   const byId = new Map(index.map(entry => [entry.id, entry]));
-  return covers.matches(String(title || ''), index.map(entry => ({ id: entry.id, title: entry.name }))).map(found => ({ id: found.id, title: found.title, pictures: byId.get(found.id).images.length }));
+  return covers.matches(String(title || ''), index.map(entry => ({ id: entry.id, title: entry.name }))).map(found => ({ id: found.id, title: found.title, ...(byId.get(found.id).platform ? { platform: byId.get(found.id).platform } : {}), pictures: byId.get(found.id).images.length }));
 }
 function pictures(index, gameId) {
   const game = index.find(entry => entry.id === gameId);
@@ -168,4 +179,4 @@ async function fetchImage(index, gameId, file, fetcher) {
   if (!jpeg && !png) throw Error('LaunchBox did not return a picture');
   return { bytes, mime: jpeg ? 'image/jpeg' : 'image/png' };
 }
-module.exports = { ZIP_URL, IMAGE_BASE, PLATFORM, TYPES, locate, lines, buildIndex, writeIndex, readIndex, download, prepare, exact, search, pictures, imageUrl, fetchImage };
+module.exports = { ZIP_URL, IMAGE_BASE, PLATFORM, TYPES, locate, lines, buildIndex, buildIndexes, writeIndex, readIndex, download, prepare, exact, search, pictures, imageUrl, fetchImage };

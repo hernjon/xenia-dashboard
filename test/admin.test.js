@@ -221,6 +221,25 @@ test('native games launch by themselves; on Linux an .exe goes through Wine or P
   const noProton=await mainHarness(false,'none',{},{platform:'linux',missingPaths:[proton],library:{xenia_executable:'',native_games:[{path:exe,title:'Sonic',runner:proton}]}});
   await assert.rejects(noProton.invoke('game:launch',id),/Runner not found: /);
 });
+test('covers by kind: a native game only uses every-platform LaunchBox, and the bulk download leaves it alone',async t=>{
+  const launchbox=require('../src/launchbox'),{dir,file}=await nativeFiles(t);
+  const exe=await file('Recomp.exe'),id=nativeGames.gameId(exe),data=path.join(dir,'launchbox');
+  await launchbox.writeIndex(data,[{id:'77',name:'Test Game',images:[{file:'front.jpg',type:'Box - Front',region:'North America'}]}]);
+  await launchbox.writeIndex(data,[{id:'500',name:'Recomp',platform:'Nintendo 64',images:[{file:'n64.jpg',type:'Box - Front',region:''}]}],1,'all');
+  const h=await mainHarness(false,'none',{title:'Test Game',title_id:'4D5307D5',uses_fallback_art:true},{userData:dir,library:{native_games:[{path:exe,title:'Recomp'}]}});
+  await h.invoke('admin:unlock','1234');
+  const ids=async gameId=>Array.from((await h.invoke('covers:sources',gameId)).map(source=>source.id));
+  assert.deepEqual(await ids(id),['launchbox-all']);
+  assert.deepEqual(await ids('test-game'),['launchbox','xenia-manager']);
+  assert.deepEqual(await ids(),['launchbox','xenia-manager'],'the bulk screen never sees it');
+  await assert.rejects(h.invoke('covers:search',id,'launchbox'),/not for this game/);
+  await assert.rejects(h.invoke('covers:search','test-game','launchbox-all'),/not for this game/);
+  assert.equal((await h.invoke('covers:search',id,'launchbox-all'))[0].platform,'Nintendo 64');
+  assert.equal((await h.invoke('covers:search',id,'launchbox-all','Recomp')).length,1,'a typed name works too');
+  const result=await h.invoke('admin:cover-auto','launchbox',true);
+  assert.equal(result.downloaded,1);assert.equal(result.missing,0,'the native game is not counted');
+  assert.equal(result.games.find(game=>game.id===id).uses_fallback_art,true,'its cover is never picked automatically');
+});
 test('Run with: Linux .exe games only; Default, a detected runner or one chosen by hand',async t=>{
   const {dir,file}=await nativeFiles(t);
   const exe=await file('Recomp.exe'),appimage=await file('Game.AppImage'),ge=await file('home/.steam/steam/compatibilitytools.d/GE-Proton9-20/proton'),mine=await file('wine-tkg/bin/wine'),id=nativeGames.gameId(exe);

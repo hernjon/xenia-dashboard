@@ -612,6 +612,19 @@ test('the per-game LaunchBox search row opens the text editor and searches with 
   assert.deepEqual(Array.from(run('searched')), ['g', 'launchbox', 'Halo 3']);
   assert.equal(run('cm.query'), 'Halo 3'); assert.equal(run('cm.games[0].title'), 'Halo 3'); assert.equal(run('rendered'), 0);
 });
+test('a native game\'s cover manager searches every platform, names the platform and asks for its own sources', async () => {
+  const { run } = guideHarness();
+  run(`globalThis.asked=null;globalThis.searched=null;
+    api.coverSources=async gameId=>{globalThis.asked=gameId;return [{id:'launchbox-all',label:'LaunchBox',needs_download:true,ready:true,built:0,games:9}]};
+    api.searchCovers=async(gameId,source,query)=>{globalThis.searched=[gameId,source,query];return []};`);
+  await run("openCoverManager({game:{id:'n',kind:'native',title:'Majora'},leave(){}})");
+  assert.equal(run('asked'), 'n', 'the sources depend on the game');
+  run(`cm.stage='games';cm.source=cm.sources[0];cm.query='Majora';cm.games=[{key:'500',title:'The Legend of Zelda: Majora\\'s Mask',platform:'Nintendo 64',pictures:4}]`);
+  assert.deepEqual(Array.from(run('coverRows().map(row=>row.label)')), ['Search LaunchBox for: Majora', "The Legend of Zelda: Majora's Mask — Nintendo 64 (4)", 'Update LaunchBox data', 'Return']);
+  assert.match(run('sourceStatusText(cm.sources[0])'), /9 games \(every platform\)/);
+  run("cm.manualQuery=true;renderCover=()=>{}");await run('openCoverSource(cm.source)');
+  assert.deepEqual(Array.from(run('searched')), ['n', 'launchbox-all', 'Majora'], 'a typed name is used for every-platform LaunchBox too');
+});
 test('B steps back through the cover manager one level at a time and leaves to where it was opened from', () => {
   const { run } = guideHarness();
   run(`globalThis.left=0;renderCover=()=>{};cm={...cm,context:{game:{id:'g',title:'Gears'},leave(){globalThis.left++}},stage:'pictures'}`);

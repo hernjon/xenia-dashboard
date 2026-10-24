@@ -36,7 +36,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   rescanRoms: () => ipcRenderer.invoke('xenia:roms-rescan'),
   contentFolder: action => ipcRenderer.invoke('xenia:content-folder', action),
   chooseOwnXenia: () => ipcRenderer.invoke('xenia:updates-own'),
-  coverSources: () => ipcRenderer.invoke('covers:sources'),
+  coverSources: gameId => ipcRenderer.invoke('covers:sources', gameId),
   prepareCoverSource: source => ipcRenderer.invoke('covers:prepare', source),
   searchCovers: (gameId, source, query) => ipcRenderer.invoke('covers:search', gameId, source, query),
   coverPictures: (gameId, source, key) => ipcRenderer.invoke('covers:pictures', gameId, source, key),
