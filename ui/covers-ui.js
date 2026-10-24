@@ -26,15 +26,21 @@ const coverModeInfo = () => AUTO_MODES.find(mode => mode.value === cm.mode) || A
 async function openCoverManager(context) {
   busy = true; errorDisplay.textContent = '';
   try {
-    cm = { ...cm, context, sources: await api.coverSources(context.game?.id), stage: context.game ? 'home' : 'bulk', source: null, games: [], pictures: [], game: null, query: context.game?.title || '', manualQuery: false };
+    cm = { ...cm, context, sources: await api.coverSources(context.game?.id), stage: context.game ? 'home' : 'bulk', source: null, games: [], pictures: [], game: null, query: context.game?.title || '', manualQuery: false, direct: null };
     renderCover();
   } catch (error) { errorDisplay.textContent = error.message; } finally { busy = false; }
+}
+// Straight to the games LaunchBox found, when a native game is added or renamed. Return (with returnLabel) and a picture
+// that was used both go on with leave(); there is no source list to go back to.
+function openCoverSearch({ game, query, games, source, returnLabel, leave }) {
+  cm = { ...cm, context: { game, leave }, sources: source ? [source] : [], source: source || { id: 'launchbox-all', label: 'LaunchBox', needs_download: false }, stage: 'games', games, pictures: [], game: null, query, manualQuery: true, direct: returnLabel };
+  renderCover();
 }
 function coverRows() {
   const { stage, sources } = cm;
   if (stage === 'home') return [{ action: 'local', label: 'Choose an image from this computer' }, ...sources.map(source => ({ action: 'source', source, label: `${source.label} covers (online)` })), { action: 'back', label: 'Return to game options' }];
   if (stage === 'setup') return [{ action: 'prepare', source: cm.source, label: `Download ${cm.source.label} data` }, { action: 'back', label: 'Return' }];
-  if (stage === 'games') return [...(isLaunchBox(cm.source.id) ? [{ action: 'search-query', label: `Search LaunchBox for: ${cm.query || 'Enter a game name'}` }] : []), ...cm.games.map(game => ({ action: 'game', game, label: `${coverGameLabel(game)} (${game.pictures})` })), ...(cm.source.needs_download ? [{ action: 'prepare', source: cm.source, label: `Update ${cm.source.label} data` }] : []), { action: 'back', label: 'Return' }];
+  if (stage === 'games') return [...(isLaunchBox(cm.source.id) ? [{ action: 'search-query', label: `Search LaunchBox for: ${cm.query || 'Enter a game name'}` }] : []), ...cm.games.map(game => ({ action: 'game', game, label: `${coverGameLabel(game)} (${game.pictures})` })), ...(cm.source.needs_download ? [{ action: 'prepare', source: cm.source, label: `Update ${cm.source.label} data` }] : []), { action: 'back', label: cm.direct || 'Return' }];
   if (stage === 'pictures') return [...cm.pictures.map(picture => ({ action: 'use', picture, label: picture.label })), { action: 'back', label: 'Back' }];
   // Source first, then its data, then the downloads, then the local scan. A source that needs no data has no data row.
   const data = coverModeInfo().needs.map(coverSourceInfo).filter(source => source?.needs_download);
@@ -98,6 +104,7 @@ function updateCoverDetails() {
 function coverBack() {
   clearTimeout(cm.timer); cm.preview++;
   if (cm.stage === 'pictures') { cm.stage = 'games'; renderCover(); }
+  else if (cm.direct && cm.stage === 'games') cm.context.leave();
   else if (cm.stage === 'games' || cm.stage === 'setup') { cm.stage = 'home'; renderCover(); }
   else cm.context.leave();
   return true;
@@ -128,7 +135,7 @@ async function activateCover() {
     return editTextEntry({ title: 'Search LaunchBox', label: 'Game name', value: cm.query, maxLength: 120, onDone: query => searchLaunchBox(query, returnIndex), onCancel: () => renderCover(returnIndex) });
   }
   if (row.action === 'mode') return openChoice({ title: 'Source for the automatic download', text: 'LaunchBox needs its data downloaded once. It only takes a cover when the whole game name matches.', options: AUTO_MODES, current: cm.mode, onPick: value => { cm.mode = value; renderCover(0); } });
-  busy = true;
+  busy = true; let used = false;
   try {
     if (row.action === 'local') { const games = await api.chooseCoverFile(cm.context.game.id); if (games) { gamesList = games; renderCarousel(); errorDisplay.textContent = 'Cover changed.'; } }
     else if (row.action === 'source') await openCoverSource(row.source);
@@ -139,12 +146,13 @@ async function activateCover() {
     } else if (row.action === 'game') {
       errorDisplay.textContent = 'Loading pictures…'; cm.pictures = await api.coverPictures(cm.context.game.id, cm.source.id, row.game.key); cm.game = row.game; cm.stage = 'pictures'; renderCover(); errorDisplay.textContent = '';
     } else if (row.action === 'use') {
-      errorDisplay.textContent = 'Downloading cover…'; gamesList = await api.applyCover(cm.context.game.id, cm.source.id, cm.game.key, row.picture.key); renderCarousel(); errorDisplay.textContent = 'Cover changed.';
+      errorDisplay.textContent = 'Downloading cover…'; gamesList = await api.applyCover(cm.context.game.id, cm.source.id, cm.game.key, row.picture.key); renderCarousel(); errorDisplay.textContent = 'Cover changed.'; used = true;
     } else if (row.action === 'auto' || row.action === 'auto-all') {
       errorDisplay.textContent = 'Downloading covers…'; const result = await api.autoCovers(cm.mode, row.action === 'auto-all'); gamesList = result.games; renderCarousel(); renderCover(selected);
       errorDisplay.textContent = `${result.downloaded} cover${result.downloaded === 1 ? '' : 's'} downloaded${result.missing ? ` · ${result.missing} not found` : ''}.`;
     } else if (row.action === 'rescan') { gamesList = await api.rescanCovers(); renderCarousel(); renderCover(selected); status('Local cover images rescanned.'); }
   } catch (error) { errorDisplay.textContent = error.message; } finally { busy = false; }
+  if (used && cm.direct) cm.context.leave();
 }
 const coverProgressText = progress => progress.kind === 'auto' ? `Downloading covers… ${progress.done} of ${progress.total}`
   : progress.received >= progress.total ? 'Reading the data… (a few seconds)' : `Downloading data… ${Math.floor(progress.received / progress.total * 100)}%`;

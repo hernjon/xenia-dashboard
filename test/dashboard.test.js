@@ -559,13 +559,102 @@ test('the game menu offers game settings, hide/show, content, patches and detail
     openXenia=id=>globalThis.called='settings:'+id;openOptimized=()=>globalThis.called='optimized';openContent=()=>globalThis.called='content';openCoverManager=()=>globalThis.called='cover';openPatches=()=>globalThis.called='patches';openGameInfo=()=>globalThis.called='info';mode='game-menu'`);
   assert.deepEqual(Array.from(run('gameMenuEntries().map(entry=>entry.label)')), ['Game settings', 'DLC and updates', 'Change cover', 'Patches', 'Game details', 'Hide game', 'Return to games']);
   for (const [index, expected] of [[0, 'settings:g'], [1, 'content'], [2, 'cover'], [3, 'patches'], [4, 'info']]) { run(`selected=${index};activateGameMenu()`); assert.equal(run('called'), expected); }
-  run("gameTarget.game.title_id='';called=''");
-  assert.deepEqual(Array.from(run('gameMenuEntries().map(entry=>entry.label)')), ['Change cover', 'Hide game', 'Return to games'], 'a game without Xbox metadata only shows applicable actions');
-  run("selected=0;activateGameMenu()"); assert.equal(run('called'), 'cover', 'a cover needs no title ID');
-  run("gameTarget.game.hidden=true");assert.equal(run('gameMenuEntries()[1].label'),'Show game');
+  run("gameTarget.game.title_id='';called='';selected=1;activateGameMenu()"); assert.equal(run('called'), '', 'no title ID: game settings do not open');
+  assert.match(byId['modal-error'].textContent, /no title ID/);
+  run("called='';selected=2;activateGameMenu()"); assert.equal(run('called'), 'cover', 'a cover needs no title ID');
+  run("gameTarget.game.title_id='';selected=5;activateGameMenu()"); assert.equal(run('mode'), 'game-menu', 'hide/show remains available without a title ID');
+  run("gameTarget.game.hidden=true");assert.equal(run('gameMenuEntries()[5].label'),'Show game');
   run("gameTarget.game.title_id='4D5307D5';openXenia=async()=>{globalThis.called='reopened'};highlight=()=>{};mode='optimized';selected=0");
   assert.equal(run("xeniaBack()"), true, 'B on the optimized screen goes back to the game settings');
   assert.equal(run('called'), 'reopened');
+});
+test('a native game\'s menu: Game settings opens its own screen, the Xenia-only entries are not there', async () => {
+  const { run } = guideHarness();
+  run(`gameTarget={game:{id:'n',kind:'native',title:'Sonic'},fromLibrary:true};openNativeSettings=game=>globalThis.called='native:'+game.id;openCoverManager=()=>globalThis.called='cover';mode='game-menu'`);
+  assert.deepEqual(Array.from(run('gameMenuEntries().map(entry=>entry.label)')), ['Game settings', 'Change cover', 'Hide game', 'Return to games']);
+  run('selected=0;activateGameMenu()'); assert.equal(run('called'), 'native:n', 'no title ID needed');
+  run('selected=1;activateGameMenu()'); assert.equal(run('called'), 'cover');
+});
+test('X on a native game asks for the Xenia lock and then opens its Game settings', () => {
+  const { run } = guideHarness();
+  run(`globalThis.opened=null;openNativeSettings=game=>{globalThis.opened=game.id};document.getElementById('status').textContent=''`);
+  run("openGameSettings({id:'n',kind:'native',title:'Sonic'})");
+  assert.equal(run("document.getElementById('status').textContent"), '', 'no "no title ID" message');
+  assert.equal(run('unlockSection'), 'xenia');
+  run('entryAfterUnlock()'); assert.equal(run('opened'), 'n');
+});
+test('Locations lists Add games… and, once there is one, Remove a game…', () => {
+  const { run } = guideHarness();
+  run("romFolders=['/roms'];nativeList=[]");
+  assert.deepEqual(Array.from(run('romRows().map(row=>row.label)')), ['Choose ROM folders…', 'Remove a ROM folder…', 'Add games…', 'Xenia install folder…', 'Xenia content folder…', 'Return to dashboard']);
+  run("nativeList=[{id:'n',path:'/g/s.exe',title:'Sonic'}]");
+  assert.ok(Array.from(run('romRows().map(row=>row.label)')).includes('Remove a game…'));
+});
+function nativeAddHarness(search) {
+  const h = guideHarness();
+  h.run(`globalThis.log=[];globalThis.edits=[];globalThis.choices=[];
+    api.pickNativeGames=async()=>({files:['/g/First_Game.exe','/g/Sonic Recomp.AppImage']});
+    api.addNativeGame=async(file,title)=>{log.push(['add',file,title]);return {id:'id:'+file,games:[{id:'id:'+file,kind:'native',title}]}};
+    api.removeNativeGame=async id=>{log.push(['remove',id]);return {games:[]}};
+    api.renameNativeGame=async(id,title)=>{log.push(['rename',id,title]);return {games:[{id,kind:'native',title}]}};
+    api.coverSources=async()=>[{id:'launchbox-all',label:'LaunchBox',needs_download:true,ready:true,built:0,games:1}];
+    api.searchCovers=${search};
+    api.getSettings=async()=>({rom_directories:[],native_games:[]});
+    editTextEntry=action=>edits.push(action);
+    openChoice=choice=>choices.push(choice);
+    renderRoms=()=>log.push(['locations']);renderCover=()=>log.push(['covers',cm.stage]);`);
+  return h;
+}
+test('adding games asks each one\'s name (B skips only that one) and offers LaunchBox\'s matches', async () => {
+  const { run } = nativeAddHarness("async(id,source,query)=>{log.push(['search',id,source,query]);return [{key:'1',title:query,platform:'PC',pictures:2}]}");
+  await run('addNativeGames()');
+  assert.deepEqual(Array.from(run('[edits[0].value,edits[0].maxLength]')), ['First Game', 120], 'the name starts as the file name, cleaned');
+  await run('edits[0].onCancel()');
+  assert.equal(run('edits[1].value'), 'Sonic Recomp', 'B skipped the first file, the second is asked');
+  assert.equal(run("nativeName('/g/UnleashedRecomp.exe')"), 'Unleashed Recomp', 'named like the scanner names Xenia games');
+  await run("edits[1].onDone(' Sonic Unleashed ')");
+  assert.deepEqual(JSON.parse(run('JSON.stringify(log.filter(entry=>entry[0]!=="covers"))')), [['add', '/g/Sonic Recomp.AppImage', 'Sonic Unleashed'], ['search', 'id:/g/Sonic Recomp.AppImage', 'launchbox-all', 'Sonic Unleashed']]);
+  assert.equal(run('cm.stage'), 'games');
+  assert.equal(run('coverRows().at(-1).label'), 'Continue without a cover');
+  run('coverBack()'); await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(JSON.parse(run('JSON.stringify(log.at(-1))')), ['locations'], 'Return goes on: no file left, back to Locations');
+});
+test('a name LaunchBox does not know is added anyway, renamed or cancelled — never blocked', async () => {
+  const { run } = nativeAddHarness("async(id,source,query)=>{log.push(['search',query]);return []}");
+  run("api.pickNativeGames=async()=>({files:['/g/x.exe']})");
+  await run('addNativeGames()'); await run("edits[0].onDone('Mystery')");
+  assert.match(run('choices[0].text'), /Mystery was not found on LaunchBox/);
+  assert.deepEqual(Array.from(run('choices[0].options.map(option=>option.label)')), ['Add anyway', 'Type another name', 'Cancel']);
+  await run("choices[0].onPick('rename')"); await run("edits[1].onDone('Mystery Two')");
+  assert.deepEqual(JSON.parse(run('JSON.stringify(log.slice(-2))')), [['rename', 'id:/g/x.exe', 'Mystery Two'], ['search', 'Mystery Two']]);
+  await run("choices[1].onPick('cancel')");
+  assert.deepEqual(JSON.parse(run('JSON.stringify(log.slice(-2))')), [['remove', 'id:/g/x.exe'], ['locations']], 'Cancel takes it out again');
+});
+test('without LaunchBox data the game can still be added, and the data can be downloaded right there', async () => {
+  const { run } = nativeAddHarness("async()=>{throw Error(\"Error invoking remote method 'covers:search': Error: Download the LaunchBox data first.\")}");
+  run("api.pickNativeGames=async()=>({files:['/g/x.exe']})");
+  await run('addNativeGames()'); await run("edits[0].onDone('Mystery')");
+  assert.match(run('choices[0].text'), /LaunchBox data is not downloaded yet/);
+  assert.deepEqual(Array.from(run('choices[0].options.map(option=>option.label)')), ['Download LaunchBox data', 'Add anyway', 'Type another name', 'Cancel']);
+  await run("choices[0].onPick('add')");
+  assert.deepEqual(JSON.parse(run('JSON.stringify(log.at(-1))')), ['locations']);
+  assert.equal(JSON.parse(run('JSON.stringify(log)')).some(entry => entry[0] === 'remove'), false);
+});
+test('a native game\'s Game settings: Name, and Run with only where a runner applies', async () => {
+  const { run } = guideHarness();
+  run(`globalThis.choices=[];globalThis.set=null;openChoice=choice=>choices.push(choice);
+    api.nativeRunners=async()=>({current:null,default:'wine',options:[{label:'GE-Proton9-20',path:'/p/proton',type:'proton'},{label:'System Wine',path:'/usr/bin/wine',type:'wine'}]});
+    api.setNativeRunner=async(id,value)=>{globalThis.set=[id,value];return {current:value}};`);
+  await run("openNativeSettings({id:'n',kind:'native',title:'Sonic'})");
+  assert.equal(run('mode'), 'native-settings');
+  assert.deepEqual(Array.from(run('nativeRows().map(row=>row.label)')), ['Name', 'Run with', 'Return to game options']);
+  run('selected=1'); await run('activateNativeSettings()');
+  assert.deepEqual(Array.from(run('choices[0].options.map(option=>option.label)')), ['Default (wine)', 'GE-Proton9-20', 'Choose another…'], 'System Wine is the default already, so it is not listed twice');
+  assert.equal(run('choices[0].current'), null);
+  await run("choices[0].onPick('/p/proton')"); assert.deepEqual(Array.from(run('set')), ['n', '/p/proton']);
+  run("api.nativeRunners=async()=>{throw Error('This game needs no runner')}");
+  await run("openNativeSettings({id:'m',kind:'native',title:'AppImage game'})");
+  assert.deepEqual(Array.from(run('nativeRows().map(row=>row.label)')), ['Name', 'Return to game options']);
 });
 test('the DLC screen offers every package, marked installed when Xenia already has it', () => {
   const { run } = guideHarness();

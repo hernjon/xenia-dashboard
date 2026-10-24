@@ -252,6 +252,7 @@ async function activate() {
   if(mode==='patches')return activatePatch();
   if(mode==='updates')return activateUpdate();
   if(mode==='roms')return activateRoms();
+  if(mode==='native-settings')return activateNativeSettings();
   if(mode==='game-info')return backToGameMenu('info');
   if(mode==='optimized')return activateOptimized();
   if(mode==='content')return activateContent();
@@ -391,6 +392,7 @@ function xeniaBack(){
   if(mode==='xenia-advanced'){if(entryMode==='advanced')closeModal();else renderXeniaHome();return true;}
   if(mode==='xenia-home'){if(entryMode==='game-settings')closeModal();else if(xeniaScope)renderGameMenu();else returnSettings();return true;}
   if(mode==='game-menu'){if(gameTarget?.fromLibrary)closeModal();else renderGameList();return true;}
+  if(mode==='native-settings'){if(entryMode==='game-settings')closeModal();else backToGameMenu('settings');return true;}
   if(mode==='patches')return backToGameMenu('patches');
   if(mode==='game-info')return backToGameMenu('info');
   if(mode==='optimized')return backToGameSettings();
@@ -409,24 +411,22 @@ function renderGameList(){
 function renderGameMenu(){
   const game=gameTarget.game;mode='game-menu';selected=0;xeniaView=null;xeniaScope=null;xeniaPath=null;
   modal(game.title,'D-pad: choose · A: select · B: return');
-  content.replaceChildren(node('p','cover-summary',game.title_id?`Title ID ${game.title_id}`:'This game has no title ID, so Xenia cannot apply per-game settings to it.'));
+  content.replaceChildren(node('p','cover-summary',game.kind==='native'?'Runs by itself, without Xenia.':game.title_id?`Title ID ${game.title_id}`:'This game has no title ID, so Xenia cannot apply per-game settings to it.'));
   buttons(gameMenuEntries().map(entry=>entry.label),'cover-options',activate);
 }
 // The game menu by name, so adding an entry never shifts what the others open.
 function gameMenuEntries(){
-  const game=gameTarget.game;
+  const game=gameTarget.game,back={id:'back',label:gameTarget.fromLibrary?'Return to games':'Return to game list',run:()=>gameTarget.fromLibrary?closeModal():renderGameList()};
+  const cover={id:'cover',label:'Change cover',run:()=>openCoverManager({game,leave:()=>backToGameMenu('cover')})},hidden={id:'hidden',label:game.hidden?'Show game':'Hide game',run:()=>toggleGameHidden()};
+  // A native game (recomp, PC port) has nothing of Xenia's: its settings are its own screen.
+  if(game.kind==='native')return [{id:'settings',label:'Game settings',run:()=>openNativeSettings(game)},cover,hidden,back];
   return [
-    ...(game.title_id?[
-      {id:'settings',label:'Game settings',run:()=>openXenia(game.id)},
-      {id:'content',label:'DLC and updates',run:()=>openContent()}
-    ]:[]),
-    {id:'cover',label:'Change cover',run:()=>openCoverManager({game,leave:()=>backToGameMenu('cover')})},
-    ...(game.title_id?[
-      {id:'patches',label:'Patches',run:()=>openPatches()},
-      {id:'info',label:'Game details',run:()=>openGameInfo()}
-    ]:[]),
-    {id:'hidden',label:game.hidden?'Show game':'Hide game',run:()=>toggleGameHidden()},
-    {id:'back',label:gameTarget.fromLibrary?'Return to games':'Return to game list',run:()=>gameTarget.fromLibrary?closeModal():renderGameList()}
+    {id:'settings',label:'Game settings',run:()=>openXenia(game.id)},
+    {id:'content',label:'DLC and updates',run:()=>openContent()},
+    cover,
+    {id:'patches',label:'Patches',run:()=>openPatches()},
+    {id:'info',label:'Game details',run:()=>openGameInfo()},
+    hidden,back
   ];
 }
 // Optimized settings sit inside a game's settings; coming back reloads them because applying changed the override.
@@ -434,7 +434,7 @@ function backToGameSettings(){openXenia(gameTarget.game.id).then(()=>{selected=0
 function backToGameMenu(id){renderGameMenu();selected=Math.max(0,gameMenuEntries().findIndex(entry=>entry.id===id));highlight();return true;}
 function activateGameMenu(){
   const entry=gameMenuEntries()[selected];if(!entry)return;
-  if(entry.id!=='back'&&entry.id!=='cover'&&entry.id!=='hidden'&&!gameTarget.game.title_id){errorDisplay.textContent='This game has no title ID.';return;}
+  if(gameTarget.game.kind!=='native'&&entry.id!=='back'&&entry.id!=='cover'&&entry.id!=='hidden'&&!gameTarget.game.title_id){errorDisplay.textContent='This game has no title ID.';return;}
   return entry.run();
 }
 async function toggleGameHidden(){
@@ -676,9 +676,9 @@ async function activateContent(){
 const megabytes=bytes=>`${(bytes/1048576).toFixed(1)} MB`;
 // Xenia Settings › Folders: where your games are, where the dashboard keeps Xenia, and Xenia's own content folder.
 // ROM folders save at once; the library is rescanned on the way out.
-let romFolders=[],exeGames=[],romsChanged=false,foldersInfo={};
-const romRows=()=>[{action:'add',label:'Choose ROM folders…'},...(romFolders.length?[{action:'remove',label:'Remove a ROM folder…'}]:[]),{action:'add-exe',label:'Add game executables…'},...(exeGames.length?[{action:'remove-exe',label:'Remove a game executable…'}]:[]),{action:'install',label:'Xenia install folder…'},{action:'content',label:'Xenia content folder…'},{action:'return',label:backLabel()}];
-async function loadFolders(){foldersInfo=await api.getSettings();romFolders=[...foldersInfo.rom_directories];exeGames=[...(foldersInfo.exe_games||[])];}
+let romFolders=[],nativeList=[],romsChanged=false,foldersInfo={};
+const romRows=()=>[{action:'add',label:'Choose ROM folders…'},...(romFolders.length?[{action:'remove',label:'Remove a ROM folder…'}]:[]),{action:'add-native',label:'Add games…'},...(nativeList.length?[{action:'remove-native',label:'Remove a game…'}]:[]),{action:'install',label:'Xenia install folder…'},{action:'content',label:'Xenia content folder…'},{action:'return',label:backLabel()}];
+async function loadFolders(){foldersInfo=await api.getSettings();romFolders=[...foldersInfo.rom_directories];nativeList=[...(foldersInfo.native_games||[])];}
 async function openRoms(){
   busy=true;try{await loadFolders();romsChanged=false;renderRoms();}catch(error){errorDisplay.textContent=error.message;}finally{busy=false;}
 }
@@ -700,9 +700,9 @@ function updateRomsDetails(){
   }else if(action==='content'){
     label.textContent='Xenia content folder';value.textContent=foldersInfo.content_root||'Not available yet';
     text.textContent=foldersInfo.content_root?'Xenia\'s own content folder: saves, DLC and title updates. Changing it only changes Xenia\'s setting; what is in the old folder stays there.':'Install or choose a Xenia and start any game once, then this folder can be changed here.';
-  }else if(action==='add-exe'||action==='remove-exe'){
-    label.textContent='Game executables';value.textContent=`${exeGames.length} selected`;
-    text.textContent=exeGames.length?`${exeGames.join('\n')}\n\nOnly executables selected here are added to the library. Xbox game files continue to be found in ROM folders.`:'Choose individual .exe games to add. Other executables in ROM folders are ignored.';
+  }else if(action==='add-native'||action==='remove-native'){
+    label.textContent='Games that run by themselves';value.textContent=nativeList.length?`${nativeList.length} game${nativeList.length===1?'':'s'}`:'None yet';
+    text.textContent=nativeList.length?`${nativeList.map(game=>game.title).join('\n')}\n\nGames that run without Xenia: recompilations and PC ports. Each one is a file you choose (.exe${foldersInfo.native_appimage?' or .AppImage':''}); you name it and pick its cover.`:'Recompilations and PC ports run without Xenia. Choose their files here, name each one, and pick a cover from LaunchBox.';
   }else{
     label.textContent='ROM folders';value.textContent=romFolders.length?`${romFolders.length} folder${romFolders.length===1?'':'s'}`:'None yet';
     text.textContent=romFolders.length?`${romFolders.join('\n')}\n\nGames in every folder (and the folders inside them) appear in the library. The library refreshes when you leave this screen.`:'Choose the folders where your Xbox 360 games are. You can pick more than one.';
@@ -719,13 +719,111 @@ async function leaveRoms(){
 async function activateRoms(){
   const row=romRows()[selected];if(!row)return;
   if(row.action==='return')return leaveRoms();
-  const run=async work=>{busy=true;try{const before=JSON.stringify([romFolders,exeGames]);await work();await loadFolders();romsChanged=romsChanged||JSON.stringify([romFolders,exeGames])!==before;renderRoms(selected);}catch(error){errorDisplay.textContent=error.message;}finally{busy=false;}};
+  const run=async work=>{busy=true;try{const before=JSON.stringify([romFolders,nativeList]);await work();await loadFolders();romsChanged=romsChanged||JSON.stringify([romFolders,nativeList])!==before;renderRoms(selected);}catch(error){errorDisplay.textContent=error.message;}finally{busy=false;}};
   if(row.action==='add')return run(()=>api.addRomFolders());
   if(row.action==='remove')return openChoice({title:'Remove a ROM folder',text:'The games stay on disk; they just leave the library.',options:romFolders.map(folder=>({value:folder,label:folder})),current:null,onPick:folder=>run(()=>api.removeRomFolder(folder))});
-  if(row.action==='add-exe')return run(()=>api.addExeGames());
-  if(row.action==='remove-exe')return openChoice({title:'Remove a game executable',text:'This only removes the game from the library; the file stays on disk.',options:exeGames.map(file=>({value:file,label:file})),current:null,onPick:file=>run(()=>api.removeExeGame(file))});
+  if(row.action==='add-native')return addNativeGames();
+  if(row.action==='remove-native')return openChoice({title:'Remove a game',text:'This only removes the game from the library; its file stays on disk.',options:nativeList.map(game=>({value:game.id,label:game.title})),current:null,onPick:id=>run(()=>api.removeNativeGame(id))});
   if(row.action==='install')return openChoice({title:'Xenia install folder',text:`Xenia is stored in ${foldersInfo.install_root}. Builds already installed move with it.`,options:[{value:'choose',label:'Choose a folder…'},...(foldersInfo.install_is_default?[]:[{value:'default',label:'Back to the default folder'}]),{value:'',label:'Keep it where it is'}],current:'',onPick:value=>value?run(()=>api.updatesFolder(value)):undefined});
   if(row.action==='content')return openChoice({title:'Xenia content folder',text:foldersInfo.content_root?`Xenia keeps saves, DLC and updates in ${foldersInfo.content_root}. Changing it does not move what is there.`:'Xenia has no config yet: start any game once first.',options:[{value:'choose',label:'Choose a folder…'},{value:'default',label:'Back to Xenia\'s default'},{value:'',label:'Keep it where it is'}],current:'',onPick:value=>value?run(()=>api.contentFolder(value)):undefined});
+}
+// Add games…: every picked file is named in turn, then gets a cover from LaunchBox (every platform). Nothing blocks adding
+// it: a name LaunchBox does not know, or no LaunchBox data yet, only asks whether to go on.
+let nativeQueue=[];
+const nativeName=file=>String(file).split(/[\\/]/).pop().replace(/\.[^.]+$/,'').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/[_.-]+/g,' ').replace(/\s+/g,' ').trim();
+const NO_LAUNCHBOX_DATA='Download the LaunchBox data first.';
+async function addNativeGames(){
+  busy=true;let files=[];
+  try{files=(await api.pickNativeGames()).files;}catch(error){errorDisplay.textContent=error.message;}finally{busy=false;}
+  if(!files.length)return;
+  nativeQueue=[...files];return nextNativeGame();
+}
+function nextNativeGame(){
+  const file=nativeQueue.shift();
+  if(!file)return backToLocations();
+  return askNativeName({title:'Name this game',value:nativeName(file),onName:title=>addNamedNative(file,title),onSkip:nextNativeGame});
+}
+async function backToLocations(){
+  busy=true;try{await loadFolders();}catch(error){errorDisplay.textContent=error.message;}finally{busy=false;}
+  romsChanged=true;renderRoms(Math.max(0,romRows().findIndex(row=>row.action==='add-native')));
+}
+function askNativeName({title,value,onName,onSkip}){
+  editTextEntry({title,label:'Game name',value,maxLength:120,onDone:text=>text.trim()?onName(text.trim()):askNativeName({title,value,onName,onSkip}),onCancel:onSkip});
+}
+async function addNamedNative(file,title){
+  busy=true;let added;
+  try{added=await api.addNativeGame(file,title);gamesList=added.games;}catch(error){errorDisplay.textContent=error.message;return nextNativeGame();}finally{busy=false;}
+  const game=added.games.find(item=>item.id===added.id)||{id:added.id,kind:'native',title};
+  return findNativeCover(game,title,{adding:true,after:nextNativeGame});
+}
+// LaunchBox's matches for the name, straight in the cover screen. When adding, no match asks what to do; when renaming,
+// no match just keeps the cover the game has.
+async function findNativeCover(game,query,{adding,after}){
+  busy=true;errorDisplay.textContent='Searching LaunchBox…';let found=[],problem=null,source=null;
+  try{[source]=await api.coverSources(game.id);found=await api.searchCovers(game.id,'launchbox-all',query);}catch(error){problem=error.message;}finally{busy=false;errorDisplay.textContent='';}
+  if(found.length)return openCoverSearch({game,query,games:found,source,returnLabel:adding?'Continue without a cover':'Keep current cover',leave:after});
+  if(!adding)return after();
+  const missingData=!!problem&&problem.includes(NO_LAUNCHBOX_DATA);
+  const text=missingData?'LaunchBox data is not downloaded yet, so no cover can be looked up.':problem?'LaunchBox could not be reached, so no cover can be looked up.':`${query} was not found on LaunchBox.`;
+  return openChoice({title:'Add this game?',text:`${text} Add it anyway? You can change its name and cover later.`,current:null,
+    options:[...(missingData?[{value:'download',label:'Download LaunchBox data'}]:[]),{value:'add',label:'Add anyway'},{value:'rename',label:'Type another name'},{value:'cancel',label:'Cancel'}],
+    onCancel:after,
+    onPick:value=>{
+      if(value==='add')return after();
+      if(value==='download')return downloadThenSearch(game,query,after);
+      if(value==='rename')return askNativeName({title:'Name this game',value:query,onName:title=>renameThenSearch(game,title,after),onSkip:after});
+      return removeAddedNative(game,after);
+    }});
+}
+async function downloadThenSearch(game,query,after){
+  busy=true;errorDisplay.textContent='Downloading LaunchBox data…';
+  try{await api.prepareCoverSource('launchbox-all');}catch(error){busy=false;errorDisplay.textContent=error.message;return after();}
+  busy=false;errorDisplay.textContent='';return findNativeCover(game,query,{adding:true,after});
+}
+async function renameThenSearch(game,title,after){
+  busy=true;try{gamesList=(await api.renameNativeGame(game.id,title)).games;}catch(error){errorDisplay.textContent=error.message;return after();}finally{busy=false;}
+  return findNativeCover({...game,title},title,{adding:true,after});
+}
+async function removeAddedNative(game,after){
+  busy=true;try{gamesList=(await api.removeNativeGame(game.id)).games;}catch(error){errorDisplay.textContent=error.message;}finally{busy=false;}
+  return after();
+}
+// A native game's Game settings: its name, and on Linux for a Windows .exe, what runs it.
+let nativeTarget=null,nativeRunnerView=null;
+const nativeRows=()=>[{action:'name',label:'Name'},...(nativeRunnerView?[{action:'runner',label:'Run with'}]:[]),{action:'return',label:entryMode==='game-settings'?backLabel():'Return to game options'}];
+async function openNativeSettings(game,index=0){
+  nativeTarget=game;nativeRunnerView=null;
+  busy=true;try{nativeRunnerView=await api.nativeRunners(game.id);}catch{/* AppImages, Windows: nothing to choose */}finally{busy=false;}
+  renderNativeSettings(index);
+}
+function renderNativeSettings(index=0){
+  mode='native-settings';const rows=nativeRows();selected=Math.min(index,rows.length-1);
+  modal(`${nativeTarget.title} · Game settings`,'D-pad: choose · A: select · B: return');
+  content.replaceChildren(node('p','cover-summary',nativeRunnerView?`Runs with ${runnerLabel(nativeRunnerView.current)}.`:'Runs by itself, without Xenia.'));
+  buttons(rows.map(row=>row.label),'cover-options',activate);
+}
+function runnerLabel(current){
+  if(!current)return `the default (${nativeRunnerView.default})`;
+  return nativeRunnerView.options.find(option=>option.path===current)?.label||current;
+}
+async function activateNativeSettings(){
+  const row=nativeRows()[selected];if(!row)return;
+  if(row.action==='return')return xeniaBack();
+  if(row.action==='name')return askNativeName({title:'Name',value:nativeTarget.title,onName:title=>renameNative(title),onSkip:()=>renderNativeSettings(0)});
+  // The system Wine is listed only when the default is something else: otherwise it is the Default row already.
+  const view=nativeRunnerView,offered=view.options.filter(option=>!(option.type==='wine'&&['wine',option.path].includes(view.default))),known=offered.some(option=>option.path===view.current);
+  return openChoice({title:'Run with',text:'What runs this Windows game on Linux. Default is the runner set for the whole dashboard.',current:view.current,
+    options:[{value:null,label:`Default (${view.default})`},...offered.map(option=>({value:option.path,label:option.label})),...(view.current&&!known?[{value:view.current,label:view.current}]:[]),{value:'choose',label:'Choose another…'}],
+    onPick:async value=>{
+      busy=true;try{const result=await api.setNativeRunner(nativeTarget.id,value);nativeRunnerView={...view,current:result.current};}catch(error){errorDisplay.textContent=error.message;}finally{busy=false;}
+      renderNativeSettings(1);
+    }});
+}
+async function renameNative(title){
+  busy=true;
+  try{gamesList=(await api.renameNativeGame(nativeTarget.id,title)).games;nativeTarget={...nativeTarget,title};renderCarousel();}catch(error){busy=false;errorDisplay.textContent=error.message;return renderNativeSettings(0);}
+  busy=false;
+  return findNativeCover(nativeTarget,title,{adding:false,after:()=>openNativeSettings(nativeTarget,0)});
 }
 const updatesChannelsInUse=()=>updatesView.channels.some(channel=>channel.in_use);
 const updatesChannelInfo=()=>updatesView.channels.find(channel=>channel.id===updatesChannel)||updatesView.channels[0];
@@ -829,6 +927,7 @@ function openGameOptions(focused){
 // X on a game: straight to that game's Xenia settings; B goes back to the library.
 function openGameSettings(focused){
   const game=discView?discView.game:focused||displayedGames()[nav.index('library')];if(busy||!game)return;
+  if(game.kind==='native'){gameTarget={game,fromLibrary:true};unlockSection='xenia';entryAfterUnlock=()=>{entryMode='game-settings';return openNativeSettings(game);};openPin();return;}
   if(!game.title_id){status('This game has no title ID, so Xenia cannot match settings to it.');return;}
   gameTarget={game,fromLibrary:true};unlockSection='xenia';entryAfterUnlock=()=>{entryMode='game-settings';return openXenia(game.id);};openPin();
 }

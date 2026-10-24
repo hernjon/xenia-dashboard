@@ -496,7 +496,7 @@ else {
     const foldersView = async () => {
       let content_root = null;
       try { content_root = await xeniaContentRoot(xeniaLocation()); } catch { /* no Xenia yet, or no config yet */ }
-      return { rom_directories: scanner.romFolders(library), native_games:nativeGames.entries(library).map(entry=>({id:nativeGames.gameId(entry.path),path:entry.path,title:entry.title})), install_root: installsRoot(), install_is_default: !library.xenia_install_dir, content_root, admin_pin_required:library.admin_pin_required!==false,locked_sections:lockedSections() };
+      return { rom_directories: scanner.romFolders(library), native_games:nativeGames.entries(library).map(entry=>({id:nativeGames.gameId(entry.path),path:entry.path,title:entry.title})),native_appimage:process.platform==='linux', install_root: installsRoot(), install_is_default: !library.xenia_install_dir, content_root, admin_pin_required:library.admin_pin_required!==false,locked_sections:lockedSections() };
     };
     handle('admin:settings', () => { requireAdmin('xenia'); return foldersView(); });
     // Locations: the ROM folders. Adding or removing saves at once; the library is rescanned when the screen is left.
