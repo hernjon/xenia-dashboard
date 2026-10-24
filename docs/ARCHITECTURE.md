@@ -100,9 +100,14 @@ Section `kind`s say what the items are (`rail`, `tiles`, `list`), not how they a
 ## Launching a game
 
 `launch()` in `src/main.js` starts Xbox game files through Xenia with `--fullscreen <game>` (straight into the game, no Xenia menu) and a log of its own
-(`--log_file`, in the app's data folder). Standalone `.exe` games run directly, without requiring Xenia; on Linux the configured
-Wine/Proton runner is used unless the runner is set to `native`. They use the same launch handoff and return to the dashboard when
-the executable exits. Only `.exe` files explicitly selected in Xenia Settings › Folders are included; the scanner pairs an adjacent image with each one. The per-game cover manager supports manual LaunchBox name searches.
+(`--log_file`, in the app's data folder). Every game has a `kind`: `xenia` (found in the ROM folders) or `native` (a file
+the user chose in *Folders › Add games…*, kept in `library.native_games` as `{ path, title, runner? }`; the first version's
+`exe_games` list is migrated once). `src/native-games.js` holds that model and builds the launch command: on Windows the file
+itself; on Linux an `.AppImage` itself (made executable first) and a Windows `.exe` through Wine (`library.runner` +
+`runner_args`, or the game's own runner) or Proton (`proton run`, with a prefix per game in `<userData>/proton-prefixes/`).
+`src/runners.js` finds Proton/GE-Proton in Steam's folders and the system Wine for *Game settings › Run with*. A native
+game has no log to watch: the dashboard comes back when its process exits. Native games take covers only from the
+every-platform LaunchBox index (`all.json`, built in the same pass as `xbox360.json`) and are skipped by the bulk download.
 Xenia (Edge) does not quit when a game ends with *Return to Arcade*: it goes back to
 its game list and keeps the window open. `title-exit.js` reads that log, and on `KernelState::ExitToDashboard` closes Xenia
 (the whole process group on Linux, so the AppImage runtime and Wine go too) and the dashboard takes the screen back. A jump from

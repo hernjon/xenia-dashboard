@@ -46,7 +46,7 @@ The first screen is deliberately neutral, so it does not favour any era: a timel
 ![Game options](docs/screenshots/game-options.jpg)
 
 - **Covers:** one manager per game or in bulk (*Download covers* / *Download missing covers*), from a local file, the Xenia Manager database or LaunchBox.
-- **Standalone `.exe` games:** add individual executables from *Xenia Settings › Folders › Add game executables* (including Xbox 360 recomps); other `.exe` files in ROM folders are ignored. They launch without Xenia. Name them for clean library titles, add a same-name `.jpg`/`.png`/`.jpeg` beside them for local art, or use **Y → Change cover → LaunchBox** to search by name; title-ID metadata is not needed.
+- **Games that run by themselves** (recompilations such as *Unleashed Recompiled* or *Zelda 64: Recompiled*, and PC ports): *Xenia Settings › Folders › Add games…* takes `.exe` files (and `.AppImage` on Linux). You name each one and pick its cover from LaunchBox, any platform; a name LaunchBox does not know is added anyway. They launch without Xenia and the dashboard comes back when they close. On Linux a Windows `.exe` runs with Wine or Proton (*Game settings › Run with*).
 - **Game details** from x360db, with title IDs read from ISO / XEX / STFS headers, so Arcade and Games-on-Demand packages are listed too. Multi-disc games become one tile.
 - **DLC and title updates** found in your ROM folder are copied unchanged into Xenia's content folder.
 - **Patches:** download and toggle them by name ([game-patches](https://github.com/xenia-canary/game-patches)).

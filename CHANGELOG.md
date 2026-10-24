@@ -3,6 +3,19 @@
 All notable changes to Xenia Dashboard. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-10-24
+
+Games that run by themselves, building on [@hernjon](https://github.com/hernjon)'s first version of `.exe` games. Thank you!
+
+### Added
+- **Recomps and PC ports in the library.** *Xenia Settings › Folders › Add games…* takes `.exe` files (and `.AppImage` on Linux). They launch without Xenia.
+- **Name and cover when adding.** Each game asks for its name and offers its LaunchBox covers, from any platform. A name LaunchBox does not know is added anyway.
+- **Run with** (Linux): a Windows game can run with Wine, Proton or GE-Proton, in its *Game settings*.
+
+### Minor changes
+- LaunchBox data now also lists every platform's games; download it again once to find covers for them.
+- Games without a title ID show their full menu again.
+
 ## [1.2.0] - 2026-10-19
 
 Manual cover search and hidden games, contributed by [@hernjon](https://github.com/hernjon) (#2). Thank you!
