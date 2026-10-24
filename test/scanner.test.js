@@ -32,6 +32,13 @@ test('ROM folder scans ignore executables; explicitly selected executables get a
   assert.deepEqual(await scanner.scanExecutables([path.join(root,'Lost Odyssey Recomp.exe')]),[game]);
   await assert.rejects(scanner.scanExecutables([path.join(root,'lost odyssey recomp.PNG')]),/Invalid executable game path/);
 });
+test('games found in ROM folders are Xenia games; native game files there are ignored', async t => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'kratos-kind-'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  for(const file of ['Halo 3.iso','Recomp.exe','Recomp.AppImage'])await fs.writeFile(path.join(root,file),'');
+  const games=await scanner.scanDirectory(root);
+  assert.deepEqual(games.map(game=>[game.title,game.kind]),[['Halo 3','xenia']]);
+});
 test('extensionless STFS packages are games and carry title metadata', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kratos-test-'));
   t.after(() => fs.rm(root, { recursive:true, force:true }));

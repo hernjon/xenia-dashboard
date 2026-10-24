@@ -77,7 +77,7 @@ async function scanDirectory(directory, readInfo = xboxTitle.readTitleInfo) {
       if (!entry.isFile() || !(await isGameFile(full, entry.name))) continue;
       const stem = path.basename(entry.name, path.extname(entry.name));
       const cover = ['.png', '.jpg', '.jpeg'].map(ext => names.get((stem + ext).toLowerCase())).find(Boolean);
-      games.push({ id: crypto.createHash('sha256').update(full).digest('hex').slice(0, 20), title: cleanTitle(entry.name), rom_path: full, cover_art_path: cover ? path.join(folder, cover) : null, uses_fallback_art: !cover });
+      games.push({ id: crypto.createHash('sha256').update(full).digest('hex').slice(0, 20), kind: 'xenia', title: cleanTitle(entry.name), rom_path: full, cover_art_path: cover ? path.join(folder, cover) : null, uses_fallback_art: !cover });
     }
   }
   await walk(path.resolve(directory));
