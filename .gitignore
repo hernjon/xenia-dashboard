@@ -11,3 +11,5 @@ dist/
 library.json
 userData/
 .superpowers/
+# Working notes of AI coding assistants (specs, plans): kept locally, never published
+docs/superpowers/
