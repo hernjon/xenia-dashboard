@@ -26,6 +26,8 @@ const optimizedSettings=require('./optimized-settings');
 const contentInstaller=require('./content-installer');
 const localCover=require('./local-cover');
 const coverSourcesModule=require('./cover-sources');
+const nativeGames=require('./native-games');
+const runners=require('./runners');
 const {existsSync}=require('node:fs');
 const ROOT=path.join(__dirname,'..'); // the app folder: index.html, assets/, skins/ ... are served from here
 const RENDERER_URL='nxe-app://dashboard/index.html';
@@ -209,7 +211,7 @@ const isHidden=(game,ids)=>game.discs?game.discs.every(disc=>ids.has(disc.id)):i
 function publicGameList(games,hidden=false) { const ids=hiddenGameIds(); return groupGames(games).filter(g=>isHidden(g,ids)===hidden).map(g=>{
   const art=g.discs?.find(d=>d.cover_art_path)||g;
   const cover=art.cover_art_path?`kratos-art://cover/${art.id}?v=${coverRevision}`:null;
-  return {id:g.id,title:g.title,...(g.title_id?{title_id:g.title_id}:{}),...(hidden?{hidden:true}:{}),uses_fallback_art:!cover,cover_art_path:cover,
+  return {id:g.id,kind:g.kind==='native'?'native':'xenia',title:g.title,...(g.title_id?{title_id:g.title_id}:{}),...(hidden?{hidden:true}:{}),uses_fallback_art:!cover,cover_art_path:cover,
     ...(g.discs?{discs:g.discs.map(d=>({id:d.id,number:d.disc_number,title:`Disc ${d.disc_number}`,uses_fallback_art:!cover,cover_art_path:cover}))}:{})};
 }); }
 function publicGames() { return publicGameList(library.games); }
@@ -274,36 +276,62 @@ async function launch(id) {
   if (child||launchPending) throw new Error('A game is already running');
   const game = library.games.find(g => g.id === id);
   if (!game) throw new Error('Unknown game');
-  const executableGame=path.extname(game.rom_path).toLowerCase()==='.exe';
-  await fs.access(game.rom_path);
-  if(!executableGame)await fs.access(library.xenia_executable);
+  if (game.kind === 'native') return launchNative(game);
+  await fs.access(game.rom_path); await fs.access(library.xenia_executable);
   // Re-check after asynchronous validation to prevent concurrent launches.
   if (child||launchPending) throw new Error('A game is already running');
   launchPending=true;
   adminSessions.clear();
-  const wrapped=process.platform==='linux'&&library.runner!=='native'&&(executableGame||/\.exe$/i.test(library.xenia_executable));
-  const command=wrapped?library.runner||'wine':executableGame?game.rom_path:library.xenia_executable;
-  const sessionLog=executableGame?null:path.join(app.getPath('userData'),'xenia-session.log');
-  const xeniaArgs=sessionLog?['--fullscreen',`--log_file=${sessionLog}`,'--log_level=2',game.rom_path]:[];
-  const args=wrapped?[...(library.runner_args||[]),...(executableGame?[game.rom_path]:[library.xenia_executable]),...xeniaArgs]:xeniaArgs;
-  if(sessionLog){await fs.mkdir(path.dirname(sessionLog),{recursive:true});await fs.writeFile(sessionLog,'');}
+  // Native Linux builds (e.g. Xenia Edge AppImage) run directly; only Windows .exe files need Wine/Proton.
+  const wrapped = process.platform === 'linux' && library.runner !== 'native' && /\.exe$/i.test(library.xenia_executable);
+  const command = wrapped ? library.runner || 'wine' : library.xenia_executable;
+  // Xenia writes its log where the dashboard can read it: that is how the dashboard knows the game went back to the dashboard.
+  const sessionLog = path.join(app.getPath('userData'), 'xenia-session.log');
+  const xeniaArgs = ['--fullscreen', `--log_file=${sessionLog}`, '--log_level=2', game.rom_path];
+  const args = wrapped ? [...(library.runner_args || []), library.xenia_executable, ...xeniaArgs] : xeniaArgs;
+  await fs.mkdir(path.dirname(sessionLog), { recursive: true }); await fs.writeFile(sessionLog, '');
   const handoff=prepareHandoff(win,{platform:process.platform});
-  try{await handoff.ready;child=spawn(command,args,{shell:false,cwd:path.dirname(executableGame?game.rom_path:library.xenia_executable),stdio:'ignore',windowsHide:false,detached:process.platform==='linux'});}
+  try{await handoff.ready;child = spawn(command, args, { shell: false, cwd: path.dirname(library.xenia_executable), stdio: 'ignore', windowsHide: false, detached: process.platform === 'linux' });}
   catch(error){handoff.cancel();throw error;}
   finally{launchPending=false;}
   let finished = false;
   const running = child;
   // "Return to Arcade" in the game: Xenia would stay open on its game list, so close it and come back to the dashboard.
-  const exitWatch=sessionLog?watchTitleExit(sessionLog,()=>terminateXenia(running)):null;
-  const finish=state=>{if(!finished){finished=true;exitWatch?.stop();handoff.cancel();recover(state);}};
+  const exitWatch = watchTitleExit(sessionLog, () => terminateXenia(running));
+  const finish = state => { if (!finished) { finished = true;exitWatch.stop();handoff.cancel(); recover(state); } };
   child.once('error', error => finish({ running: false, error: `Launch failed: ${error.message}` }));
-  child.once('close',code=>finish({running:false,error:code?`${executableGame?'Game':'Emulator'} exited with code ${code}`:null}));
+  child.once('close', code => finish({ running: false, error: code ? `Emulator exited with code ${code}` : null }));
   child.once('spawn', () => {
     // Keep the dashboard fullscreen underneath Xenia during window creation.
     globalShortcut.unregisterAll();
     handoff.watch(child.pid);
     win.webContents.send('game:state', { running: true });
   });
+  return true;
+}
+// A native game (recomp, PC port) runs by itself: no Xenia and no log to watch; the dashboard comes back when it exits.
+async function launchNative(game) {
+  const entry=nativeGames.entries(library).find(item=>nativeGames.gameId(item.path)===game.id);
+  if(!entry)throw new Error('Unknown game');
+  try{await fs.access(game.rom_path);}catch{throw new Error(`Game file not found: ${game.rom_path}`);}
+  const linux=process.platform==='linux';
+  const run=nativeGames.launchCommand({file:game.rom_path,platform:process.platform,runner:entry.runner||library.runner,runnerArgs:Array.isArray(library.runner_args)?library.runner_args:[],userData:app.getPath('userData'),steamRoot:linux?await runners.steamRoot(app.getPath('home')):null,gameId:game.id});
+  if(run.command!==game.rom_path&&path.isAbsolute(run.command)){try{await fs.access(run.command);}catch{throw new Error(`Runner not found: ${run.command}`);}}
+  // A downloaded AppImage often lacks the executable bit; the user picked this file, so make it runnable for them.
+  if(linux&&run.command===game.rom_path){const {mode}=await fs.stat(game.rom_path);if(!(mode&0o100))await fs.chmod(game.rom_path,mode|0o100);}
+  if(run.prefix)await fs.mkdir(run.prefix,{recursive:true});
+  if(child||launchPending)throw new Error('A game is already running');
+  launchPending=true;
+  adminSessions.clear();
+  const handoff=prepareHandoff(win,{platform:process.platform});
+  try{await handoff.ready;child=spawn(run.command,run.args,{shell:false,cwd:run.cwd,stdio:'ignore',windowsHide:false,detached:linux,...(run.env?{env:{...process.env,...run.env}}:{})});}
+  catch(error){handoff.cancel();throw error;}
+  finally{launchPending=false;}
+  let finished=false;
+  const finish=state=>{if(!finished){finished=true;handoff.cancel();recover(state);}};
+  child.once('error',error=>finish({running:false,error:`Launch failed: ${error.message}`}));
+  child.once('close',code=>finish({running:false,error:code?`Game exited with code ${code}`:null}));
+  child.once('spawn',()=>{globalShortcut.unregisterAll();handoff.watch(child.pid);win.webContents.send('game:state',{running:true});});
   return true;
 }
 if(unsafeSwitch){console.error(`[Xenia Dashboard] Refusing unsafe startup option: --${unsafeSwitch}`);app.quit();}
@@ -313,6 +341,8 @@ else {
   app.whenReady().then(async () => {
     libraryFile = path.join(app.getPath('userData'), 'library.json');
     library = await scanner.loadLibrary(libraryFile);
+    // The first native-games version kept bare paths in exe_games; they become named entries once.
+    {const migrated=nativeGames.migrate(library);if(migrated!==library){library=migrated;await scanner.saveLibrary(libraryFile,library);}}
     // An install that already has settings never gets the wizard unasked; remember that so a later reset of one setting does not bring it back.
     if(!library.wizard_done&&!wizardState.isFirstRun(library))library={...library,wizard_done:true};
     importedTheme=await loadSkinTheme();
@@ -321,10 +351,13 @@ else {
     // Games from every ROM folder; a folder that cannot be read is named in the message but does not hide the others.
     const scanFolders = async () => {
       const failed = [];
-      const directories=await scanner.scanDirectories(scanner.romFolders(library),undefined,(folder,error)=>failed.push(`${folder} (${error.code||error.message})`));
-      const executables=await scanner.scanExecutables(Array.isArray(library.exe_games)?library.exe_games:[],(file,error)=>failed.push(`${file} (${error.code||error.message})`));
-      const unique=new Map([...directories,...executables].map(game=>[game.rom_path,game]));
-      const games=await covers.applyCached([...unique.values()].sort((a,b)=>a.title.localeCompare(b.title)||a.rom_path.localeCompare(b.rom_path)),coverDirectory);
+      const xenia=await scanner.scanDirectories(scanner.romFolders(library),undefined,(folder,error)=>failed.push(`${folder} (${error.code||error.message})`));
+      const natives=await nativeGames.games(nativeGames.entries(library),process.platform,(file,error)=>failed.push(`${file} (${error.code||error.message})`));
+      // A cover picked for a native game wins over the picture next to its file, which is only the fallback.
+      const sidecars=new Map(natives.map(game=>[game.id,game.cover_art_path]));
+      for(const game of natives){game.cover_art_path=null;game.uses_fallback_art=true;}
+      const games=(await covers.applyCached([...xenia,...natives],coverDirectory)).sort((a,b)=>a.title.localeCompare(b.title)||a.rom_path.localeCompare(b.rom_path));
+      for(const game of games)if(game.uses_fallback_art&&sidecars.get(game.id)){game.cover_art_path=sidecars.get(game.id);game.uses_fallback_art=false;}
       scanError = failed.length ? `Could not read: ${failed.join(', ')}` : '';
       return games;
     };
@@ -463,7 +496,7 @@ else {
     const foldersView = async () => {
       let content_root = null;
       try { content_root = await xeniaContentRoot(xeniaLocation()); } catch { /* no Xenia yet, or no config yet */ }
-      return { rom_directories: scanner.romFolders(library), exe_games:Array.isArray(library.exe_games)?library.exe_games:[], install_root: installsRoot(), install_is_default: !library.xenia_install_dir, content_root, admin_pin_required:library.admin_pin_required!==false,locked_sections:lockedSections() };
+      return { rom_directories: scanner.romFolders(library), native_games:nativeGames.entries(library).map(entry=>({id:nativeGames.gameId(entry.path),path:entry.path,title:entry.title})), install_root: installsRoot(), install_is_default: !library.xenia_install_dir, content_root, admin_pin_required:library.admin_pin_required!==false,locked_sections:lockedSections() };
     };
     handle('admin:settings', () => { requireAdmin('xenia'); return foldersView(); });
     // Locations: the ROM folders. Adding or removing saves at once; the library is rescanned when the screen is left.
@@ -488,26 +521,59 @@ else {
       if (!have.includes(folder)) throw new Error('That folder is not in the list');
       return saveRomFolders(have.filter(known => known !== folder));
     }));
-    const saveExeGames=async files=>{const next={...library,exe_games:files};await scanner.saveLibrary(libraryFile,next);library=next;return {files};};
-    handle('xenia:exe-games-add',()=>serialized(async()=>{
+    // Native games (recomps, PC ports): picked as files, each added with the name the user types. Only a file from the
+    // last picker can be added, so the renderer can never point the library at a path of its own.
+    let pendingNative=new Set(),offeredRunners=new Set();
+    const nativeEntry=id=>{const entry=nativeGames.entries(library).find(item=>nativeGames.gameId(item.path)===id);if(!entry)throw Error('Unknown native game');return entry;};
+    const nativeTitle=title=>{if(!nativeGames.validTitle(title))throw Error('Invalid game name');return title.trim();};
+    const saveNative=async list=>{
+      let next={...library,native_games:list};await scanner.saveLibrary(libraryFile,next);library=next;
+      const games=await scanFolders();next={...library,games};await scanner.saveLibrary(libraryFile,next);library=next;coverRevision++;return publicGames();
+    };
+    handle('native:pick',()=>serialized(async()=>{
       requireAdmin('xenia');
       if(pickerOpen)throw Error('A file picker is already open');
       pickerOpen=true;let picked=[];
       try{
-        const have=Array.isArray(library.exe_games)?library.exe_games:[];
-        const result=await dialog.showOpenDialog(win,{title:'Choose game executables',defaultPath:have.at(-1)?path.dirname(have.at(-1)):undefined,properties:['openFile','multiSelections',...(process.platform==='win32'?['dontAddToRecent']:[])],filters:[{name:'Game executable',extensions:['exe']}]});
+        const last=nativeGames.entries(library).at(-1),extensions=nativeGames.EXTENSIONS(process.platform).map(ext=>ext==='.appimage'?'AppImage':ext.slice(1));
+        const result=await dialog.showOpenDialog(win,{title:'Choose games',defaultPath:last?path.dirname(last.path):undefined,properties:['openFile','multiSelections',...(process.platform==='win32'?['dontAddToRecent']:[])],filters:[{name:'Games',extensions}]});
         requireAdmin('xenia');
         picked=result.canceled?[]:result.filePaths;
       }finally{pickerOpen=false;}
-      const have=Array.isArray(library.exe_games)?library.exe_games:[];
-      const fresh=picked.filter(file=>typeof file==='string'&&file.length<=4096&&!file.includes('\0')&&path.isAbsolute(file)&&path.extname(file).toLowerCase()==='.exe'&&!have.some(known=>path.resolve(known)===path.resolve(file)));
-      return fresh.length?saveExeGames([...have,...fresh]):{files:have};
+      const have=new Set(nativeGames.entries(library).map(entry=>path.resolve(entry.path)));
+      const files=[...new Set(picked)].filter(file=>nativeGames.isNativePath(file,process.platform)&&!have.has(path.resolve(file)));
+      pendingNative=new Set(files);return {files};
     }));
-    handle('xenia:exe-games-remove',file=>serialized(async()=>{
+    handle('native:add',(file,title)=>serialized(async()=>{
       requireAdmin('xenia');
-      const have=Array.isArray(library.exe_games)?library.exe_games:[];
-      if(!have.includes(file))throw Error('That executable is not in the list');
-      return saveExeGames(have.filter(known=>known!==file));
+      if(typeof file!=='string'||!pendingNative.has(file))throw Error('That file is not one you picked');
+      const name=nativeTitle(title);pendingNative.delete(file);
+      return {id:nativeGames.gameId(file),games:await saveNative([...nativeGames.entries(library),{path:file,title:name}])};
+    }));
+    handle('native:remove',id=>serialized(async()=>{requireAdmin('xenia');nativeEntry(id);return {games:await saveNative(nativeGames.entries(library).filter(item=>nativeGames.gameId(item.path)!==id))};}));
+    handle('native:rename',(id,title)=>serialized(async()=>{
+      requireAdmin('xenia');nativeEntry(id);const name=nativeTitle(title);
+      return {games:await saveNative(nativeGames.entries(library).map(item=>nativeGames.gameId(item.path)===id?{...item,title:name}:item))};
+    }));
+    // Run with: Linux, Windows .exe games only. Only a runner this list offered, or a file the user picks, can be saved.
+    const runnerGame=id=>{const entry=nativeEntry(id);if(process.platform!=='linux'||path.extname(entry.path).toLowerCase()!=='.exe')throw Error('This game needs no runner');return entry;};
+    handle('native:runners',async id=>{
+      requireAdmin('xenia');const entry=runnerGame(id);
+      const options=await runners.detect({home:app.getPath('home'),pathEnv:process.env?.PATH||''});offeredRunners=new Set(options.map(option=>option.path));
+      return {current:entry.runner||null,default:library.runner&&library.runner!=='native'?library.runner:'wine',options};
+    });
+    handle('native:set-runner',(id,value)=>serialized(async()=>{
+      requireAdmin('xenia');runnerGame(id);
+      let runner=null;
+      if(value==='choose'){
+        if(pickerOpen)throw Error('A file picker is already open');
+        pickerOpen=true;let result;
+        try{result=await dialog.showOpenDialog(win,{title:'Choose Wine or Proton',properties:['openFile']});requireAdmin('xenia');}finally{pickerOpen=false;}
+        if(result.canceled||!result.filePaths[0])return {current:runnerGame(id).runner||null};
+        runner=result.filePaths[0];if(typeof runner!=='string'||!path.isAbsolute(runner)||runner.includes('\0'))throw Error('Unknown runner');
+      }else if(value!==null){if(typeof value!=='string'||!offeredRunners.has(value))throw Error('Unknown runner');runner=value;}
+      await saveNative(nativeGames.entries(library).map(item=>{if(nativeGames.gameId(item.path)!==id)return item;const {runner:_old,...rest}=item;return runner?{...rest,runner}:rest;}));
+      return {current:runner};
     }));
     handle('xenia:roms-rescan', () => serialized(async () => {
       requireAdmin('xenia');

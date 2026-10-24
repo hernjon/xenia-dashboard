@@ -9,7 +9,7 @@ const scanner = require('../src/scanner');
 const { EventEmitter } = require('node:events');
 
 async function mainHarness(withTheme=false,coverMode='none',gameExtra={},options={}) {
-  const handlers = new Map(), calls = [], events = new Map(), windowEvents = new Map(), windowCalls = [], routes = new Map(), spawnCalls = [], accessCalls = [];
+  const handlers = new Map(), calls = [], events = new Map(), windowEvents = new Map(), windowCalls = [], routes = new Map(), spawnCalls = [], accessCalls = [], chmodCalls = [], mkdirCalls = [];
   const emulator = new EventEmitter();
   const game = { id: 'test-game', title: 'Test Game', rom_path: 'C:\\Games\\Test.iso', ...gameExtra };
   if(coverMode!=='none'){game.uses_fallback_art=false;game.cover_art_path=coverMode==='cached'?path.join(__dirname,'covers','test-game.jpg'):path.join(__dirname,'sidecar.jpg');}
@@ -33,7 +33,7 @@ async function mainHarness(withTheme=false,coverMode='none',gameExtra={},options
     }
   };
   const context = vm.createContext({
-    require: name => name === './xenia-releases' ? { ...require('../src/xenia-releases'), httpsFetcher: (url, init) => routes.has(url) ? Promise.resolve(routes.get(url)(url, init)) : Promise.reject(new Error(`unrouted ${url}`)) } : name === 'electron' ? electron : name === 'node:child_process' ? { spawn: (...args) => { spawnCalls.push(args); return emulator; } } : name === 'node:fs/promises' ? { access: async file => { accessCalls.push(file); if(file===''||options.missingPaths?.includes(file))throw Object.assign(Error('ENOENT'),{code:'ENOENT'}); },mkdir:async()=>{},writeFile:async()=>{},rename:async()=>{},unlink:async()=>{},readdir:(...args)=>require('node:fs/promises').readdir(...args) } : name==='./nxe'?{...require('../src/nxe'),loadTheme:async()=>({directory:__dirname,manifest:{version:1,assets:{},backgrounds:[{id:'theme-test',label:'Test'}],inventory:[],sounds:{},notes:[]},selected:'theme-test',audio:{volume:.5,muted:options.legacyMuted===true}})}:name === './scanner' ? { ...scanner, loadLibrary: async () => ({ rom_directory: options.romDirectory ?? '', rom_directories: options.romDirectory ? [options.romDirectory] : [], xenia_executable: options.executable ?? 'C:\\Xenia\\xenia.exe', games: [game], admin_credential: scanner.hashPin('1234'), ...(options.library || {}) }), scanDirectory: async () => [game], scanDirectories: async () => [game], saveLibrary: async () => {} } : require(name.startsWith('./') ? '../src/' + name.slice(2) : name),
+    require: name => name === './xenia-releases' ? { ...require('../src/xenia-releases'), httpsFetcher: (url, init) => routes.has(url) ? Promise.resolve(routes.get(url)(url, init)) : Promise.reject(new Error(`unrouted ${url}`)) } : name === 'electron' ? electron : name === 'node:child_process' ? { spawn: (...args) => { spawnCalls.push(args); return emulator; } } : name === 'node:fs/promises' ? { access: async file => { accessCalls.push(file); if(file===''||options.missingPaths?.includes(file))throw Object.assign(Error('ENOENT'),{code:'ENOENT'}); },mkdir:async(...args)=>{mkdirCalls.push(args);},writeFile:async()=>{},rename:async()=>{},unlink:async()=>{},readdir:(...args)=>require('node:fs/promises').readdir(...args),stat:(...args)=>require('node:fs/promises').stat(...args),chmod:async(...args)=>{chmodCalls.push(args);} } : name==='./nxe'?{...require('../src/nxe'),loadTheme:async()=>({directory:__dirname,manifest:{version:1,assets:{},backgrounds:[{id:'theme-test',label:'Test'}],inventory:[],sounds:{},notes:[]},selected:'theme-test',audio:{volume:.5,muted:options.legacyMuted===true}})}:name === './scanner' ? { ...scanner, loadLibrary: async () => ({ rom_directory: options.romDirectory ?? '', rom_directories: options.romDirectory ? [options.romDirectory] : [], xenia_executable: options.executable ?? 'C:\\Xenia\\xenia.exe', games: [game], admin_credential: scanner.hashPin('1234'), ...(options.library || {}) }), scanDirectory: async () => [game], scanDirectories: async () => [game], saveLibrary: async () => {} } : require(name.startsWith('./') ? '../src/' + name.slice(2) : name),
     __dirname: path.join(__dirname, '..', 'src'), console: { info() {}, warn() {}, error() {} }, process: { platform: options.platform || 'win32', on() {} }, Date: { now: () => now }, URL, Response
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..','src','main.js'), 'utf8'), context);
@@ -42,7 +42,7 @@ async function mainHarness(withTheme=false,coverMode='none',gameExtra={},options
   for (let attempts = 0; !window && attempts < 1000; attempts++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.ok(window, 'main.js never created the window');
   const caller = () => ({ sender: window.webContents, senderFrame: window.webContents.mainFrame });
-  return { calls, events, windowEvents, routes, emulator, windowCalls,spawnCalls,accessCalls,hasHandler:name=>handlers.has(name), invoke: (name, ...args) => handlers.get(name)(caller(), ...args), untrusted: (name, ...args) => handlers.get(name)({ sender: {}, senderFrame: {} }, ...args), setTime: value => { now = value; }, setResult: value => { dialogResult = value; } };
+  return { calls, events, windowEvents, routes, emulator, windowCalls,spawnCalls,accessCalls,chmodCalls,mkdirCalls,hasHandler:name=>handlers.has(name), invoke: (name, ...args) => handlers.get(name)(caller(), ...args), untrusted: (name, ...args) => handlers.get(name)({ sender: {}, senderFrame: {} }, ...args), setTime: value => { now = value; }, setResult: value => { dialogResult = value; } };
 }
 test('PIN protection defaults on, can be disabled in-session and reenabled with the saved PIN',async()=>{
   const h=await mainHarness();
@@ -88,7 +88,7 @@ test('native pickers require PIN and trusted IPC, constrain picker type and pres
   await assert.rejects(h.invoke('admin:sound','volume',1), /session expired/);
   await assert.rejects(h.invoke('covers:apply', 'test-game', 'xenia-manager', '4D5307E6', 'boxart'), /session expired/);
   await assert.rejects(h.untrusted('covers:search', 'test-game', 'xenia-manager'), /Untrusted/);
-  for (const call of [['xenia:roms-add'], ['xenia:roms-remove', '/roms'], ['xenia:exe-games-add'], ['xenia:exe-games-remove','/games/game.exe'], ['xenia:roms-rescan'], ['xenia:updates-own']]) {
+  for (const call of [['xenia:roms-add'], ['xenia:roms-remove', '/roms'], ['native:pick'], ['native:add','/games/game.exe','Game'], ['native:remove','x'], ['native:rename','x','Game'], ['native:runners','x'], ['native:set-runner','x',null], ['xenia:roms-rescan'], ['xenia:updates-own']]) {
     await assert.rejects(h.invoke(...call), /session expired/);
     await assert.rejects(h.untrusted(...call), /Untrusted/);
   }
@@ -102,16 +102,6 @@ test('native pickers require PIN and trusted IPC, constrain picker type and pres
   h.setResult({ canceled: true, filePaths: [] });
   assert.deepEqual(Array.from((await h.invoke('xenia:roms-add')).folders), ['/games/a', '/games/b'], 'cancelling changes nothing');
   assert.deepEqual(Array.from((await h.invoke('admin:settings')).rom_directories), ['/games/a', '/games/b']);
-  assert.deepEqual(Array.from((await h.invoke('admin:settings')).exe_games),[]);
-  h.setResult({canceled:false,filePaths:['/games/recomp.exe','/games/helper.exe','relative.exe','/games/not-a-game.iso']});
-  const exes=await h.invoke('xenia:exe-games-add');
-  assert.deepEqual(Array.from(exes.files),['/games/recomp.exe','/games/helper.exe']);
-  assert.deepEqual(Array.from(h.calls.at(-1).properties),['openFile','multiSelections','dontAddToRecent']);
-  assert.deepEqual(Array.from(h.calls.at(-1).filters[0].extensions),['exe']);
-  assert.deepEqual(Array.from((await h.invoke('admin:settings')).exe_games),['/games/recomp.exe','/games/helper.exe']);
-  assert.deepEqual(Array.from((await h.invoke('xenia:exe-games-add')).files),['/games/recomp.exe','/games/helper.exe'],'duplicates are not added again');
-  await assert.rejects(h.invoke('xenia:exe-games-remove','/games/missing.exe'),/not in the list/);
-  assert.deepEqual(Array.from((await h.invoke('xenia:exe-games-remove','/games/recomp.exe')).files),['/games/helper.exe']);
   await assert.rejects(h.invoke('xenia:roms-remove', '/nope'), /not in the list/);
   assert.deepEqual(Array.from((await h.invoke('xenia:roms-remove', '/games/a')).folders), ['/games/b']);
   await h.invoke('xenia:roms-rescan');
@@ -132,11 +122,6 @@ test('picker cannot return a path after PIN session expires while it is open', a
   await h.invoke('admin:unlock', '1234', 'xenia');
   h.setResult(() => { h.setTime(1300001); return { canceled: false, filePaths: ['C:\\private'] }; });
   await assert.rejects(h.invoke('xenia:roms-add'), /session expired/);
-});
-test('adding executable games requires the Xenia session through the whole picker',async()=>{
-  const h=await mainHarness();await h.invoke('admin:unlock','1234','xenia');
-  h.setResult(()=>{h.setTime(1300001);return {canceled:false,filePaths:['C:\\Games\\Recomp.exe']};});
-  await assert.rejects(h.invoke('xenia:exe-games-add'),/session expired/);
 });
 test('admin editing allows clipboard shortcuts; kiosk still blocks devtools and modifiers', async () => {
   const h = await mainHarness();
@@ -161,20 +146,100 @@ test('game startup keeps the kiosk fullscreen underneath Xenia; exit restores fo
   h.emulator.emit('error', new Error('late error'));
   assert.equal(h.windowCalls.filter(call => call[0] === 'restore').length, 1);
 });
-test('standalone executables launch without Xenia and Linux uses the configured runner',async()=>{
-  const executable=path.join(__dirname,'games','Recompiled Game.exe');
-  const windows=await mainHarness(false,'none',{rom_path:executable},{library:{xenia_executable:''}});
-  await windows.invoke('game:launch','test-game');
-  assert.deepEqual(windows.accessCalls,[executable],'only the selected executable is required to exist');
-  assert.equal(JSON.stringify(windows.spawnCalls[0]),JSON.stringify([executable,[],{shell:false,cwd:path.dirname(executable),stdio:'ignore',windowsHide:false,detached:false}]));
-  windows.emulator.emit('close',0);
-
-  const linux=await mainHarness(false,'none',{rom_path:executable},{platform:'linux',library:{xenia_executable:'',runner:'wine',runner_args:['-windowed'] }});
-  await linux.invoke('game:launch','test-game');
-  assert.equal(JSON.stringify(linux.spawnCalls[0]),JSON.stringify(['wine',['-windowed',executable],{shell:false,cwd:path.dirname(executable),stdio:'ignore',windowsHide:false,detached:true}]));
-  linux.emulator.emit('close',0);
+const nativeGames=require('../src/native-games');
+async function nativeFiles(t){
+  const fsp=require('node:fs/promises'),os=require('node:os'),dir=await fsp.mkdtemp(path.join(os.tmpdir(),'xd-native-main-'));
+  t.after(()=>fsp.rm(dir,{recursive:true,force:true}));
+  const file=async(name,mode=0o755)=>{const full=path.join(dir,name);await fsp.mkdir(path.dirname(full),{recursive:true});await fsp.writeFile(full,'x');await fsp.chmod(full,mode);return full;};
+  return {dir,file};
+}
+test('native games: picked files are named one by one, then renamed and removed, all under the Xenia session',async t=>{
+  const {file}=await nativeFiles(t);
+  const old=await file('Old Recomp.exe'),sonic=await file('Sonic – Recomp/Unleashed "R".exe'),appimage=await file('Game.AppImage'),iso=await file('Halo.iso');
+  const h=await mainHarness(false,'none',{},{platform:'linux',library:{exe_games:[old]}});
+  await h.invoke('admin:unlock','1234','xenia');
+  assert.deepEqual(JSON.parse(JSON.stringify((await h.invoke('admin:settings')).native_games)),[{id:nativeGames.gameId(old),path:old,title:'Old Recomp'}],'the first version\'s list is kept');
+  assert.equal(Object.hasOwn(await h.invoke('admin:settings'),'exe_games'),false);
+  h.setResult({canceled:false,filePaths:[sonic,appimage,old,'relative.exe',iso]});
+  assert.deepEqual(Array.from((await h.invoke('native:pick')).files),[sonic,appimage],'new, valid game files only');
+  assert.deepEqual(JSON.parse(JSON.stringify(h.calls.at(-1).filters)),[{name:'Games',extensions:['exe','AppImage']}]);
+  await assert.rejects(h.invoke('native:add','/elsewhere/x.exe','X'),/not one you picked/);
+  for(const bad of ['  ','x'.repeat(121),42])await assert.rejects(h.invoke('native:add',sonic,bad),/Invalid game name/);
+  const added=await h.invoke('native:add',sonic,' Sonic Unleashed ');
+  assert.equal(added.id,nativeGames.gameId(sonic));
+  const game=added.games.find(g=>g.id===added.id);
+  assert.equal(game.kind,'native');assert.equal(game.title,'Sonic Unleashed');
+  await assert.rejects(h.invoke('native:add',sonic,'Again'),/not one you picked/,'a picked file is added once');
+  await h.invoke('native:add',appimage,'Some Game');
+  const renamed=await h.invoke('native:rename',added.id,'Sonic Unleashed Recompiled');
+  assert.equal(renamed.games.find(g=>g.id===added.id).title,'Sonic Unleashed Recompiled','same id after a rename');
+  await assert.rejects(h.invoke('native:rename',added.id,''),/Invalid game name/);
+  const removed=await h.invoke('native:remove',added.id);
+  assert.equal(removed.games.some(g=>g.id===added.id),false);
+  await assert.rejects(h.invoke('native:remove','nope'),/Unknown native game/);
+  assert.deepEqual(JSON.parse(JSON.stringify((await h.invoke('admin:settings')).native_games)).map(g=>g.title),['Old Recomp','Some Game']);
+  await h.invoke('admin:lock');
+  await assert.rejects(h.invoke('native:pick'),/session expired/);
 });
-
+test('native games on Windows: only .exe files, and the picker needs the Xenia session to the end',async t=>{
+  const {file}=await nativeFiles(t);const exe=await file('Recomp.exe'),appimage=await file('Game.AppImage');
+  const h=await mainHarness();await h.invoke('admin:unlock','1234','xenia');
+  h.setResult({canceled:false,filePaths:[exe,appimage]});
+  assert.deepEqual(Array.from((await h.invoke('native:pick')).files),[exe]);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.calls.at(-1))).filters,[{name:'Games',extensions:['exe']}]);
+  assert.deepEqual(Array.from(h.calls.at(-1).properties),['openFile','multiSelections','dontAddToRecent']);
+  h.setResult(()=>{h.setTime(1300001);return {canceled:false,filePaths:[exe]};});
+  await assert.rejects(h.invoke('native:pick'),/session expired/);
+});
+test('native games launch by themselves; on Linux an .exe goes through Wine or Proton',async t=>{
+  const {dir,file}=await nativeFiles(t);
+  const exe=await file('Sonic Unleashed – Recomp/Unleashed "R".exe'),appimage=await file('Game.AppImage',0o644),proton=await file('GE-Proton9-20/proton'),id=nativeGames.gameId(exe);
+  const options=(extra={})=>({library:{xenia_executable:'',native_games:[{path:exe,title:'Sonic'},{path:appimage,title:'Game'}],...extra}});
+  const windows=await mainHarness(false,'none',{},options());
+  await windows.invoke('game:launch',id);
+  assert.equal(JSON.stringify(windows.spawnCalls[0]),JSON.stringify([exe,[],{shell:false,cwd:path.dirname(exe),stdio:'ignore',windowsHide:false,detached:false}]));
+  assert.deepEqual(windows.accessCalls,[exe],'Xenia is not needed');
+  windows.emulator.emit('close',0);
+  const wine=await mainHarness(false,'none',{},{platform:'linux',...options({runner:'native',runner_args:['-windowed']})});
+  await wine.invoke('game:launch',id);
+  assert.equal(JSON.stringify(wine.spawnCalls[0]),JSON.stringify(['wine',['-windowed',exe],{shell:false,cwd:path.dirname(exe),stdio:'ignore',windowsHide:false,detached:true}]),'a Windows game never runs directly on Linux');
+  wine.emulator.emit('close',0);
+  const linux=await mainHarness(false,'none',{},{platform:'linux',userData:dir,library:{xenia_executable:'',native_games:[{path:exe,title:'Sonic',runner:proton},{path:appimage,title:'Game'}]}});
+  await linux.invoke('game:launch',id);
+  const [command,args,spawnOptions]=linux.spawnCalls[0],prefix=path.join(dir,'proton-prefixes',id);
+  assert.equal(command,proton);assert.deepEqual(Array.from(args),['run',exe]);
+  assert.equal(spawnOptions.env.STEAM_COMPAT_DATA_PATH,prefix);
+  assert.equal(spawnOptions.env.STEAM_COMPAT_CLIENT_INSTALL_PATH,path.join(dir,'home','.steam','steam'));
+  assert.ok(linux.mkdirCalls.some(([folder,how])=>folder===prefix&&how?.recursive),'the Proton prefix is created');
+  linux.emulator.emit('close',0);
+  await linux.invoke('game:launch',nativeGames.gameId(appimage));
+  assert.equal(linux.spawnCalls[1][0],appimage);
+  assert.ok(linux.chmodCalls.some(([target,mode])=>target===appimage&&mode&0o100),'an AppImage is made runnable first');
+  linux.emulator.emit('close',0);
+  const gone=await mainHarness(false,'none',{},{...options(),missingPaths:[exe]});
+  await assert.rejects(gone.invoke('game:launch',id),/Game file not found/);
+  const noProton=await mainHarness(false,'none',{},{platform:'linux',missingPaths:[proton],library:{xenia_executable:'',native_games:[{path:exe,title:'Sonic',runner:proton}]}});
+  await assert.rejects(noProton.invoke('game:launch',id),/Runner not found: /);
+});
+test('Run with: Linux .exe games only; Default, a detected runner or one chosen by hand',async t=>{
+  const {dir,file}=await nativeFiles(t);
+  const exe=await file('Recomp.exe'),appimage=await file('Game.AppImage'),ge=await file('home/.steam/steam/compatibilitytools.d/GE-Proton9-20/proton'),mine=await file('wine-tkg/bin/wine'),id=nativeGames.gameId(exe);
+  const h=await mainHarness(false,'none',{},{platform:'linux',userData:dir,library:{runner:'wine',native_games:[{path:exe,title:'Recomp'},{path:appimage,title:'Game'}]}});
+  await assert.rejects(h.invoke('native:runners',id),/session expired/);
+  await h.invoke('admin:unlock','1234','xenia');
+  const view=await h.invoke('native:runners',id);
+  assert.equal(view.current,null);assert.equal(view.default,'wine');
+  assert.deepEqual(Array.from(view.options.map(option=>option.path)),[ge]);
+  await assert.rejects(h.invoke('native:runners',nativeGames.gameId(appimage)),/needs no runner/);
+  assert.equal((await h.invoke('native:set-runner',id,ge)).current,ge);
+  await assert.rejects(h.invoke('native:set-runner',id,'/somewhere/else'),/Unknown runner/);
+  h.setResult({canceled:false,filePaths:[mine]});
+  assert.equal((await h.invoke('native:set-runner',id,'choose')).current,mine);
+  assert.equal((await h.invoke('native:set-runner',id,null)).current,null);
+  const windows=await mainHarness(false,'none',{},{library:{native_games:[{path:exe,title:'Recomp'}]}});
+  await windows.invoke('admin:unlock','1234','xenia');
+  await assert.rejects(windows.invoke('native:runners',id),/needs no runner/);
+});
 test('rescanning covers needs the Dashboard session and refreshes the library',async()=>{
   const h=await mainHarness(false,'cached');
   await assert.rejects(h.invoke('admin:cover-rescan'),/session expired/);
