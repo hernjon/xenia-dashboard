@@ -419,7 +419,8 @@ function gameMenuEntries(){
   const game=gameTarget.game,back={id:'back',label:gameTarget.fromLibrary?'Return to games':'Return to game list',run:()=>gameTarget.fromLibrary?closeModal():renderGameList()};
   const cover={id:'cover',label:'Change cover',run:()=>openCoverManager({game,leave:()=>backToGameMenu('cover')})},hidden={id:'hidden',label:game.hidden?'Show game':'Hide game',run:()=>toggleGameHidden()};
   // A native game (recomp, PC port) has nothing of Xenia's: its settings are its own screen.
-  if(game.kind==='native')return [{id:'settings',label:'Game settings',run:()=>openNativeSettings(game)},cover,hidden,back];
+  // It was added by hand, so it can be removed from here too (the same as Folders › Remove a game…).
+  if(game.kind==='native')return [{id:'settings',label:'Game settings',run:()=>openNativeSettings(game)},cover,hidden,{id:'remove',label:'Remove from library',run:()=>confirmRemoveNative(game)},back];
   return [
     {id:'settings',label:'Game settings',run:()=>openXenia(game.id)},
     {id:'content',label:'DLC and updates',run:()=>openContent()},
@@ -787,6 +788,15 @@ async function renameThenSearch(game,title,after){
 async function removeAddedNative(game,after){
   busy=true;try{gamesList=(await api.removeNativeGame(game.id)).games;}catch(error){errorDisplay.textContent=error.message;}finally{busy=false;}
   return after();
+}
+function confirmRemoveNative(game){
+  return openChoice({title:'Remove from library',text:`Remove ${game.title} from the library? Its file stays on disk; you can add it again in Folders.`,current:'cancel',
+    options:[{value:'remove',label:'Remove'},{value:'cancel',label:'Cancel'}],
+    onPick:async value=>{
+      if(value!=='remove')return;
+      busy=true;try{gamesList=(await api.removeNativeGame(game.id)).games;}catch(error){busy=false;errorDisplay.textContent=error.message;return;}
+      busy=false;closeModal();renderCarousel();status(`${game.title} removed from the library.`);
+    }});
 }
 // A native game's Game settings: its name, and on Linux for a Windows .exe, what runs it.
 let nativeTarget=null,nativeRunnerView=null;

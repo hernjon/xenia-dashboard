@@ -571,9 +571,24 @@ test('the game menu offers game settings, hide/show, content, patches and detail
 test('a native game\'s menu: Game settings opens its own screen, the Xenia-only entries are not there', async () => {
   const { run } = guideHarness();
   run(`gameTarget={game:{id:'n',kind:'native',title:'Sonic'},fromLibrary:true};openNativeSettings=game=>globalThis.called='native:'+game.id;openCoverManager=()=>globalThis.called='cover';mode='game-menu'`);
-  assert.deepEqual(Array.from(run('gameMenuEntries().map(entry=>entry.label)')), ['Game settings', 'Change cover', 'Hide game', 'Return to games']);
+  assert.deepEqual(Array.from(run('gameMenuEntries().map(entry=>entry.label)')), ['Game settings', 'Change cover', 'Hide game', 'Remove from library', 'Return to games']);
   run('selected=0;activateGameMenu()'); assert.equal(run('called'), 'native:n', 'no title ID needed');
   run('selected=1;activateGameMenu()'); assert.equal(run('called'), 'cover');
+});
+test('a native game can be removed from its own menu too, after a confirmation that defaults to Cancel', async () => {
+  const { run } = guideHarness();
+  run(`globalThis.choices=[];globalThis.removed=null;openChoice=choice=>choices.push(choice);
+    api.removeNativeGame=async id=>{globalThis.removed=id;return {games:[]}};
+    gameTarget={game:{id:'n',kind:'native',title:'Sonic'},fromLibrary:true};mode='game-menu';gamesList=[{id:'n',kind:'native',title:'Sonic'}]`);
+  run("selected=gameMenuEntries().findIndex(entry=>entry.id==='remove');activateGameMenu()");
+  assert.match(run('choices[0].text'), /Sonic.*file stays on disk/s);
+  assert.deepEqual(Array.from(run('choices[0].options.map(option=>option.label)')), ['Remove', 'Cancel']);
+  assert.equal(run('choices[0].current'), 'cancel', 'Cancel is the safe default');
+  await run("choices[0].onPick('cancel')"); assert.equal(run('removed'), null);
+  await run("choices[0].onPick('remove')"); assert.equal(run('removed'), 'n');
+  assert.equal(run('gamesList.length'), 0); assert.equal(run('mode'), 'library', 'back to the games');
+  run("gameTarget={game:{id:'x',title:'Halo',title_id:'4D5307E6'},fromLibrary:true}");
+  assert.equal(Array.from(run('gameMenuEntries().map(entry=>entry.id)')).includes('remove'), false, 'Xenia games leave with their ROM folder');
 });
 test('X on a native game asks for the Xenia lock and then opens its Game settings', () => {
   const { run } = guideHarness();

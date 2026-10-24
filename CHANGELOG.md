@@ -8,7 +8,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 Games that run by themselves, building on [@hernjon](https://github.com/hernjon)'s first version of `.exe` games. Thank you!
 
 ### Added
-- **Recomps and PC ports in the library.** *Xenia Settings › Folders › Add games…* takes `.exe` files (and `.AppImage` on Linux). They launch without Xenia.
+- **Recomps and PC ports in the library.** *Xenia Settings › Folders › Add games…* takes `.exe` files (and `.AppImage` on Linux). They launch without Xenia, and *Remove from library* in a game's menu takes one out again.
 - **Name and cover when adding.** Each game asks for its name and offers its LaunchBox covers, from any platform. A name LaunchBox does not know is added anyway.
 - **Run with** (Linux): a Windows game can run with Wine, Proton or GE-Proton, in its *Game settings*.
 - `.zar` game files are found in ROM folders.
