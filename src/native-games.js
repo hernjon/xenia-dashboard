@@ -28,7 +28,7 @@ function migrate(library) {
   const { exe_games: old, ...rest } = library, list = entries(library), known = new Set(list.map(entry => path.resolve(entry.path)));
   for (const file of Array.isArray(old) ? old : []) {
     if (!isNativePath(file, 'linux') || known.has(path.resolve(file))) continue;
-    known.add(path.resolve(file)); list.push({ path: file, title: cleanTitle(file) });
+    known.add(path.resolve(file)); list.push({ path: file, title: cleanTitle(file).slice(0, MAX_TITLE).trim() });
   }
   return { ...rest, native_games: list };
 }

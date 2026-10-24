@@ -618,6 +618,7 @@ test('adding games asks each one\'s name (B skips only that one) and offers Laun
   assert.equal(run('coverRows().at(-1).label'), 'Continue without a cover');
   run('coverBack()'); await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(JSON.parse(run('JSON.stringify(log.at(-1))')), ['locations'], 'Return goes on: no file left, back to Locations');
+  assert.equal(run('romsChanged'), false, 'the games are already in the library: leaving Folders does not rescan for them');
 });
 test('a name LaunchBox does not know is added anyway, renamed or cancelled — never blocked', async () => {
   const { run } = nativeAddHarness("async(id,source,query)=>{log.push(['search',query]);return []}");

@@ -745,7 +745,7 @@ function nextNativeGame(){
 }
 async function backToLocations(){
   busy=true;try{await loadFolders();}catch(error){errorDisplay.textContent=error.message;}finally{busy=false;}
-  romsChanged=true;renderRoms(Math.max(0,romRows().findIndex(row=>row.action==='add-native')));
+  renderCarousel();renderRoms(Math.max(0,romRows().findIndex(row=>row.action==='add-native')));
 }
 function askNativeName({title,value,onName,onSkip}){
   editTextEntry({title,label:'Game name',value,maxLength:120,onDone:text=>text.trim()?onName(text.trim()):askNativeName({title,value,onName,onSkip}),onCancel:onSkip});

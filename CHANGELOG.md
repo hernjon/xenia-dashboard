@@ -11,10 +11,10 @@ Games that run by themselves, building on [@hernjon](https://github.com/hernjon)
 - **Recomps and PC ports in the library.** *Xenia Settings › Folders › Add games…* takes `.exe` files (and `.AppImage` on Linux). They launch without Xenia.
 - **Name and cover when adding.** Each game asks for its name and offers its LaunchBox covers, from any platform. A name LaunchBox does not know is added anyway.
 - **Run with** (Linux): a Windows game can run with Wine, Proton or GE-Proton, in its *Game settings*.
+- `.zar` game files are found in ROM folders.
 
 ### Minor changes
 - LaunchBox data now also lists every platform's games; download it again once to find covers for them.
-- Games without a title ID show their full menu again.
 
 ## [1.2.0] - 2026-10-19
 

@@ -318,7 +318,10 @@ async function launchNative(game) {
   const run=nativeGames.launchCommand({file:game.rom_path,platform:process.platform,runner:entry.runner||library.runner,runnerArgs:Array.isArray(library.runner_args)?library.runner_args:[],userData:app.getPath('userData'),steamRoot:linux?await runners.steamRoot(app.getPath('home')):null,gameId:game.id});
   if(run.command!==game.rom_path&&path.isAbsolute(run.command)){try{await fs.access(run.command);}catch{throw new Error(`Runner not found: ${run.command}`);}}
   // A downloaded AppImage often lacks the executable bit; the user picked this file, so make it runnable for them.
-  if(linux&&run.command===game.rom_path){const {mode}=await fs.stat(game.rom_path);if(!(mode&0o100))await fs.chmod(game.rom_path,mode|0o100);}
+  if(linux&&run.command===game.rom_path){
+    const {mode}=await fs.stat(game.rom_path);
+    if(!(mode&0o100))try{await fs.chmod(game.rom_path,mode|0o100);}catch(error){throw new Error(`Could not make ${game.rom_path} executable (${error.code||error.message}). Make it executable in your file manager, or move it to a drive that allows it.`);}
+  }
   if(run.prefix)await fs.mkdir(run.prefix,{recursive:true});
   if(child||launchPending)throw new Error('A game is already running');
   launchPending=true;
@@ -349,15 +352,20 @@ else {
     const coverDirectory = path.join(app.getPath('userData'), 'covers');
     let scanError = '';
     // Games from every ROM folder; a folder that cannot be read is named in the message but does not hide the others.
-    const scanFolders = async () => {
-      const failed = [];
-      const xenia=await scanner.scanDirectories(scanner.romFolders(library),undefined,(folder,error)=>failed.push(`${folder} (${error.code||error.message})`));
+    const byTitle=(a,b)=>a.title.localeCompare(b.title)||a.rom_path.localeCompare(b.rom_path);
+    // The native games with their covers: a cover picked for one wins over the picture next to its file, which is only the fallback.
+    const scanNative=async failed=>{
       const natives=await nativeGames.games(nativeGames.entries(library),process.platform,(file,error)=>failed.push(`${file} (${error.code||error.message})`));
-      // A cover picked for a native game wins over the picture next to its file, which is only the fallback.
       const sidecars=new Map(natives.map(game=>[game.id,game.cover_art_path]));
       for(const game of natives){game.cover_art_path=null;game.uses_fallback_art=true;}
-      const games=(await covers.applyCached([...xenia,...natives],coverDirectory)).sort((a,b)=>a.title.localeCompare(b.title)||a.rom_path.localeCompare(b.rom_path));
-      for(const game of games)if(game.uses_fallback_art&&sidecars.get(game.id)){game.cover_art_path=sidecars.get(game.id);game.uses_fallback_art=false;}
+      await covers.applyCached(natives,coverDirectory);
+      for(const game of natives)if(game.uses_fallback_art&&sidecars.get(game.id)){game.cover_art_path=sidecars.get(game.id);game.uses_fallback_art=false;}
+      return natives;
+    };
+    const scanFolders = async () => {
+      const failed = [];
+      const xenia=await covers.applyCached(await scanner.scanDirectories(scanner.romFolders(library),undefined,(folder,error)=>failed.push(`${folder} (${error.code||error.message})`)),coverDirectory);
+      const games=[...xenia,...await scanNative(failed)].sort(byTitle);
       scanError = failed.length ? `Could not read: ${failed.join(', ')}` : '';
       return games;
     };
@@ -526,9 +534,13 @@ else {
     let pendingNative=new Set(),offeredRunners=new Set();
     const nativeEntry=id=>{const entry=nativeGames.entries(library).find(item=>nativeGames.gameId(item.path)===id);if(!entry)throw Error('Unknown native game');return entry;};
     const nativeTitle=title=>{if(!nativeGames.validTitle(title))throw Error('Invalid game name');return title.trim();};
+    // Only the native games are rebuilt; the Xenia games (a walk over every ROM folder) stay as they are.
     const saveNative=async list=>{
-      let next={...library,native_games:list};await scanner.saveLibrary(libraryFile,next);library=next;
-      const games=await scanFolders();next={...library,games};await scanner.saveLibrary(libraryFile,next);library=next;coverRevision++;return publicGames();
+      const failed=[],before={...library,native_games:list},natives=await (library=before,scanNative(failed));
+      const next={...before,games:[...before.games.filter(game=>game.kind!=='native'),...natives].sort(byTitle)};
+      await scanner.saveLibrary(libraryFile,next);library=next;coverRevision++;
+      if(failed.length)scanError=`Could not read: ${failed.join(', ')}`;
+      return publicGames();
     };
     handle('native:pick',()=>serialized(async()=>{
       requireAdmin('xenia');
@@ -572,7 +584,8 @@ else {
         if(result.canceled||!result.filePaths[0])return {current:runnerGame(id).runner||null};
         runner=result.filePaths[0];if(typeof runner!=='string'||!path.isAbsolute(runner)||runner.includes('\0'))throw Error('Unknown runner');
       }else if(value!==null){if(typeof value!=='string'||!offeredRunners.has(value))throw Error('Unknown runner');runner=value;}
-      await saveNative(nativeGames.entries(library).map(item=>{if(nativeGames.gameId(item.path)!==id)return item;const {runner:_old,...rest}=item;return runner?{...rest,runner}:rest;}));
+      const next={...library,native_games:nativeGames.entries(library).map(item=>{if(nativeGames.gameId(item.path)!==id)return item;const {runner:_old,...rest}=item;return runner?{...rest,runner}:rest;})};
+      await scanner.saveLibrary(libraryFile,next);library=next;
       return {current:runner};
     }));
     handle('xenia:roms-rescan', () => serialized(async () => {

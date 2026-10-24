@@ -27,6 +27,9 @@ test('the old exe_games list becomes native_games once, without duplicates or in
   assert.equal(after.runner, 'wine');
   assert.deepEqual(native.migrate(after), after);
   assert.ok(before.exe_games, 'the original object is left alone');
+  const long = `/g/${'Very Long Name '.repeat(12)}.exe`, kept = native.migrate({ exe_games: [long] });
+  assert.equal(native.entries(kept).length, 1, 'a long file name is kept, its title shortened');
+  assert.ok(kept.native_games[0].title.length <= native.MAX_TITLE);
   assert.deepEqual(native.entries({}), []);
   assert.deepEqual(native.entries({ native_games: [{ path: 'rel.exe', title: 'x' }, { path: '/g/a.exe', title: '' }, { path: '/g/b.exe', title: 'B', runner: '/w/wine' }] }), [{ path: '/g/b.exe', title: 'B', runner: '/w/wine' }]);
 });

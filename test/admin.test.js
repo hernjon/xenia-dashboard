@@ -9,7 +9,7 @@ const scanner = require('../src/scanner');
 const { EventEmitter } = require('node:events');
 
 async function mainHarness(withTheme=false,coverMode='none',gameExtra={},options={}) {
-  const handlers = new Map(), calls = [], events = new Map(), windowEvents = new Map(), windowCalls = [], routes = new Map(), spawnCalls = [], accessCalls = [], chmodCalls = [], mkdirCalls = [];
+  const handlers = new Map(), calls = [], events = new Map(), windowEvents = new Map(), windowCalls = [], routes = new Map(), spawnCalls = [], accessCalls = [], chmodCalls = [], mkdirCalls = [], scans = { count: 0 };
   const emulator = new EventEmitter();
   const game = { id: 'test-game', title: 'Test Game', rom_path: 'C:\\Games\\Test.iso', ...gameExtra };
   if(coverMode!=='none'){game.uses_fallback_art=false;game.cover_art_path=coverMode==='cached'?path.join(__dirname,'covers','test-game.jpg'):path.join(__dirname,'sidecar.jpg');}
@@ -33,7 +33,7 @@ async function mainHarness(withTheme=false,coverMode='none',gameExtra={},options
     }
   };
   const context = vm.createContext({
-    require: name => name === './xenia-releases' ? { ...require('../src/xenia-releases'), httpsFetcher: (url, init) => routes.has(url) ? Promise.resolve(routes.get(url)(url, init)) : Promise.reject(new Error(`unrouted ${url}`)) } : name === 'electron' ? electron : name === 'node:child_process' ? { spawn: (...args) => { spawnCalls.push(args); return emulator; } } : name === 'node:fs/promises' ? { access: async file => { accessCalls.push(file); if(file===''||options.missingPaths?.includes(file))throw Object.assign(Error('ENOENT'),{code:'ENOENT'}); },mkdir:async(...args)=>{mkdirCalls.push(args);},writeFile:async()=>{},rename:async()=>{},unlink:async()=>{},readdir:(...args)=>require('node:fs/promises').readdir(...args),stat:(...args)=>require('node:fs/promises').stat(...args),chmod:async(...args)=>{chmodCalls.push(args);} } : name==='./nxe'?{...require('../src/nxe'),loadTheme:async()=>({directory:__dirname,manifest:{version:1,assets:{},backgrounds:[{id:'theme-test',label:'Test'}],inventory:[],sounds:{},notes:[]},selected:'theme-test',audio:{volume:.5,muted:options.legacyMuted===true}})}:name === './scanner' ? { ...scanner, loadLibrary: async () => ({ rom_directory: options.romDirectory ?? '', rom_directories: options.romDirectory ? [options.romDirectory] : [], xenia_executable: options.executable ?? 'C:\\Xenia\\xenia.exe', games: [game], admin_credential: scanner.hashPin('1234'), ...(options.library || {}) }), scanDirectory: async () => [game], scanDirectories: async () => [game], saveLibrary: async () => {} } : require(name.startsWith('./') ? '../src/' + name.slice(2) : name),
+    require: name => name === './xenia-releases' ? { ...require('../src/xenia-releases'), httpsFetcher: (url, init) => routes.has(url) ? Promise.resolve(routes.get(url)(url, init)) : Promise.reject(new Error(`unrouted ${url}`)) } : name === 'electron' ? electron : name === 'node:child_process' ? { spawn: (...args) => { spawnCalls.push(args); return emulator; } } : name === 'node:fs/promises' ? { access: async file => { accessCalls.push(file); if(file===''||options.missingPaths?.includes(file))throw Object.assign(Error('ENOENT'),{code:'ENOENT'}); },mkdir:async(...args)=>{mkdirCalls.push(args);},writeFile:async()=>{},rename:async()=>{},unlink:async()=>{},readdir:(...args)=>require('node:fs/promises').readdir(...args),stat:(...args)=>require('node:fs/promises').stat(...args),chmod:async(...args)=>{chmodCalls.push(args);if(options.chmodFails)throw Object.assign(Error(`EPERM: operation not permitted, chmod '${args[0]}'`),{code:'EPERM'});} } : name==='./nxe'?{...require('../src/nxe'),loadTheme:async()=>({directory:__dirname,manifest:{version:1,assets:{},backgrounds:[{id:'theme-test',label:'Test'}],inventory:[],sounds:{},notes:[]},selected:'theme-test',audio:{volume:.5,muted:options.legacyMuted===true}})}:name === './scanner' ? { ...scanner, loadLibrary: async () => ({ rom_directory: options.romDirectory ?? '', rom_directories: options.romDirectory ? [options.romDirectory] : [], xenia_executable: options.executable ?? 'C:\\Xenia\\xenia.exe', games: [game], admin_credential: scanner.hashPin('1234'), ...(options.library || {}) }), scanDirectory: async () => [game], scanDirectories: async () => { scans.count++; return [game]; }, saveLibrary: async () => {} } : require(name.startsWith('./') ? '../src/' + name.slice(2) : name),
     __dirname: path.join(__dirname, '..', 'src'), console: { info() {}, warn() {}, error() {} }, process: { platform: options.platform || 'win32', on() {} }, Date: { now: () => now }, URL, Response
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..','src','main.js'), 'utf8'), context);
@@ -42,7 +42,7 @@ async function mainHarness(withTheme=false,coverMode='none',gameExtra={},options
   for (let attempts = 0; !window && attempts < 1000; attempts++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.ok(window, 'main.js never created the window');
   const caller = () => ({ sender: window.webContents, senderFrame: window.webContents.mainFrame });
-  return { calls, events, windowEvents, routes, emulator, windowCalls,spawnCalls,accessCalls,chmodCalls,mkdirCalls,hasHandler:name=>handlers.has(name), invoke: (name, ...args) => handlers.get(name)(caller(), ...args), untrusted: (name, ...args) => handlers.get(name)({ sender: {}, senderFrame: {} }, ...args), setTime: value => { now = value; }, setResult: value => { dialogResult = value; } };
+  return { calls, events, windowEvents, routes, emulator, windowCalls,spawnCalls,accessCalls,chmodCalls,mkdirCalls,scans,hasHandler:name=>handlers.has(name), invoke: (name, ...args) => handlers.get(name)(caller(), ...args), untrusted: (name, ...args) => handlers.get(name)({ sender: {}, senderFrame: {} }, ...args), setTime: value => { now = value; }, setResult: value => { dialogResult = value; } };
 }
 test('PIN protection defaults on, can be disabled in-session and reenabled with the saved PIN',async()=>{
   const h=await mainHarness();
@@ -181,6 +181,19 @@ test('native games: picked files are named one by one, then renamed and removed,
   await h.invoke('admin:lock');
   await assert.rejects(h.invoke('native:pick'),/session expired/);
 });
+test('changing native games never walks the ROM folders again',async t=>{
+  const {file}=await nativeFiles(t);const exe=await file('Recomp.exe');
+  const h=await mainHarness(false,'none',{},{platform:'linux',library:{native_games:[]}});
+  await h.invoke('admin:unlock','1234','xenia');
+  const before=h.scans.count;
+  h.setResult({canceled:false,filePaths:[exe]});await h.invoke('native:pick');
+  const added=await h.invoke('native:add',exe,'Recomp');
+  assert.deepEqual(Array.from(added.games.map(game=>game.id)).sort(),[added.id,'test-game'].sort(),'the Xenia games are kept as they were');
+  await h.invoke('native:rename',added.id,'Recomp 2');
+  await h.invoke('native:runners',added.id);await h.invoke('native:set-runner',added.id,'choose');
+  await h.invoke('native:remove',added.id);
+  assert.equal(h.scans.count,before,'only the native games are rebuilt');
+});
 test('native games on Windows: only .exe files, and the picker needs the Xenia session to the end',async t=>{
   const {file}=await nativeFiles(t);const exe=await file('Recomp.exe'),appimage=await file('Game.AppImage');
   const h=await mainHarness();await h.invoke('admin:unlock','1234','xenia');
@@ -220,6 +233,8 @@ test('native games launch by themselves; on Linux an .exe goes through Wine or P
   await assert.rejects(gone.invoke('game:launch',id),/Game file not found/);
   const noProton=await mainHarness(false,'none',{},{platform:'linux',missingPaths:[proton],library:{xenia_executable:'',native_games:[{path:exe,title:'Sonic',runner:proton}]}});
   await assert.rejects(noProton.invoke('game:launch',id),/Runner not found: /);
+  const ntfs=await mainHarness(false,'none',{},{platform:'linux',chmodFails:true,library:{xenia_executable:'',native_games:[{path:appimage,title:'Game'}]}});
+  await assert.rejects(ntfs.invoke('game:launch',nativeGames.gameId(appimage)),/Could not make .*Game\.AppImage executable/);
 });
 test('covers by kind: a native game only uses every-platform LaunchBox, and the bulk download leaves it alone',async t=>{
   const launchbox=require('../src/launchbox'),{dir,file}=await nativeFiles(t);
